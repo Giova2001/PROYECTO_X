@@ -1,5 +1,7 @@
 # Enfoque, decisiones, reutilización e interacción
 
+La versión extendida para entregar está en [ENFOQUE.pdf](ENFOQUE.pdf).
+
 Documento del Tema 6: tienda de relojes con microservicios, Apache Kafka y Docker. Describe el enfoque usado sobre el proyecto base `TiendaRelojes`, las decisiones de diseño, qué código se reutilizó y cómo se comunican las partes durante una compra.
 
 ## 1. Enfoque
