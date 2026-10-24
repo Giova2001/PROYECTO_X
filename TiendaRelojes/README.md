@@ -18,7 +18,7 @@ Abrir **http://localhost:8088**. El arranque inicial puede tardar mientras Kafka
 
 ## Demostración paso a paso
 1. Abrir el catálogo y seleccionar un reloj.
-2. Añadirlo al carrito y abrir el carrito (icono de bolsa).
+2. Pulsar «Añadir a la cesta». El reloj aparece en el panel «Tu cesta», a la derecha del catálogo.
 3. Completar nombre, teléfono, dirección y método de pago.
 4. Crear pedido. `OrdersApi` publica `OrderPlaced` en Kafka.
 5. `InventoryApi` consume el evento, comprueba y reserva existencias; publica `StockReserved` o `StockRejected`.
