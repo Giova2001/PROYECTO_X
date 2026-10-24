@@ -31,10 +31,10 @@ El sistema separa inventario, pedidos y cobros en microservicios para facilitar 
 - Cobros simulados por seguridad y alcance académico.
 
 ## Reutilización
-El proyecto `Shared` centraliza DTOs y mensajería. Cada servicio reutiliza los mismos contratos y se mantiene independiente en la lógica de negocio. Se emplea una arquitectura orientada a eventos comparable con el patrón Observer.
+El proyecto `Shared` centraliza DTOs y mensajería. Cada servicio reutiliza los mismos contratos y se mantiene independiente en la lógica de negocio. Se emplea una arquitectura orientada a eventos comparable con el patrón Observer. El detalle del enfoque, de las decisiones, de la reutilización y de la interacción entre partes está en `docs/ENFOQUE.md`.
 
 ## Entregables incluidos
-Código fuente, configuración Docker, README, arquitectura, manual de usuario, plan de pruebas y este informe.
+Código fuente, configuración Docker, README, documento de enfoque, arquitectura, manual de usuario, plan de pruebas y este informe.
 
 ## Pendientes para entrega final
 Completar nombres de integrantes, fecha, capturas reales de funcionamiento, resultados de pruebas, incidencias y enlace al repositorio público GitHub. La exposición debe explicar una venta de principio a fin y la propagación de eventos por Kafka.
