@@ -64,7 +64,7 @@ curl -X POST http://localhost:8088/api/orders/orders \
 - `OrdersApi/`: pedidos y consumidor Kafka.
 - `PaymentsApi/`: cobros simulados y consumidor Kafka.
 - `Shared/`: contratos y publicador/consumidor Kafka reutilizables.
-- `docs/`: enfoque y decisiones, arquitectura, manual de usuario, informe académico y pruebas. El documento de enfoque está en `docs/ENFOQUE.md`.
+- `docs/`: enfoque y decisiones, arquitectura, manual de usuario, informe académico y pruebas. La versión para entregar está en `docs/ENFOQUE.pdf`.
 - `compose.yaml`: contenedores, volúmenes y dependencias.
 
 ## Persistencia
