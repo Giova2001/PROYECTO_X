@@ -18,7 +18,7 @@ Abrir **http://localhost:8088**. El arranque inicial puede tardar mientras Kafka
 
 ## Demostración paso a paso
 1. Abrir el catálogo y seleccionar un reloj.
-2. Añadirlo al carrito y abrir el carrito (icono de bolsa).
+2. Pulsar «Añadir a la cesta». El reloj aparece en el panel «Tu cesta», a la derecha del catálogo.
 3. Completar nombre, teléfono, dirección y método de pago.
 4. Crear pedido. `OrdersApi` publica `OrderPlaced` en Kafka.
 5. `InventoryApi` consume el evento, comprueba y reserva existencias; publica `StockReserved` o `StockRejected`.
@@ -76,4 +76,4 @@ Cada API almacena su SQLite en un volumen Docker. Para reiniciar datos **y borra
 **Limitación de consistencia:** el proyecto es un prototipo educativo; no implementa outbox transaccional, reconciliación automática, expiración de reservas, ni coordinación robusta ante fallas entre guardar en SQLite y publicar en Kafka. Para producción se requieren estos mecanismos, además de seguridad, auditoría, idempotencia de solicitudes HTTP y pruebas de concurrencia.
 
 ## Validación
-El entorno en el que se generó el código no tenía Docker ni SDK .NET instalados, por lo que no se ejecutó la compilación ni la prueba de integración aquí. Revisar `docs/PRUEBAS.md` para realizar la verificación en una máquina con Docker.
+`dotnet build` compila Shared, InventoryApi, OrdersApi y PaymentsApi. `docker compose up --build -d` publica la tienda en el puerto 8088. Al crear un pedido, OrdersApi publica `OrderPlaced`; InventoryApi reserva existencias y el estado pasa a `awaiting-payment`; al simular el pago aprobado el pedido queda `paid` y el stock baja una unidad. El plan de casos está en `docs/PRUEBAS.md`.

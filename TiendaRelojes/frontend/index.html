@@ -14,8 +14,8 @@
         <nav>
             <a href="#catalogo">Tienda</a><a href="#nosotros">Acerca de</a><a href="#envios">Envíos</a><a
                 href="#contacto">Contacto</a></nav>
-        <div class="nav-actions"><button id="adminBtn" class="light">Administración</button><button id="cartBtn"
-                aria-label="Carrito">🛍️ <span id="cartCount">0</span></button></div>
+        <div class="nav-actions"><button id="adminBtn" class="light">Administración</button><a id="cartBtn"
+                class="cart-link" href="#cesta">Cesta <span id="cartCount">0</span></a></div>
     </header>
     <main>
         <section id="inicio" class="hero">
@@ -36,7 +36,27 @@
                     <h2>Relojes disponibles</h2>
                 </div><label>Buscar <input id="search" placeholder="Modelo o marca"></label>
             </div>
-            <div id="products" class="products"></div>
+            <div class="shop">
+                <div id="products" class="products"></div>
+                <aside id="cesta" class="basket">
+                    <h2>Tu cesta</h2>
+                    <p id="cartNotice" class="notice">Pulsa «Añadir a la cesta» en un reloj. El pedido aparece aquí.</p>
+                    <div id="cartLines">Tu cesta está vacía.</div>
+                    <p class="total">Total: <strong id="cartTotal">$0.00</strong></p>
+                    <form id="checkout">
+                        <h3>Datos de entrega</h3>
+                        <label>Nombre completo<input name="customer" required maxlength="100"></label>
+                        <label>Teléfono<input name="phone" required maxlength="30"></label>
+                        <label>Dirección de entrega<textarea name="address" required maxlength="300"></textarea></label>
+                        <label>Método de pago<select name="paymentMethod">
+                                <option value="transferencia">Transferencia (simulada)</option>
+                                <option value="contra-entrega">Contra entrega (simulado)</option>
+                            </select></label>
+                        <button id="placeOrder" class="primary" type="button">Crear pedido</button>
+                    </form>
+                    <p id="checkoutMsg" role="status"></p>
+                </aside>
+            </div>
         </section>
         <section id="nosotros" class="info">
             <h2>Relojes con personalidad</h2>
@@ -55,21 +75,6 @@
     </main>
     <dialog id="productDialog"><button class="close" data-close="productDialog">×</button>
         <div id="productDetail"></div>
-    </dialog>
-    <dialog id="cartDialog"><button class="close" data-close="cartDialog">×</button>
-        <h2>Tu carrito</h2>
-        <div id="cartLines"></div>
-        <p class="total">Total: <strong id="cartTotal">$0.00</strong></p>
-        <form id="checkout">
-            <h3>Datos de entrega</h3><label>Nombre completo<input name="customer" required
-                    maxlength="100"></label><label>Teléfono<input name="phone" required
-                    maxlength="30"></label><label>Dirección de entrega<textarea name="address" required
-                    maxlength="300"></textarea></label><label>Método de pago<select name="paymentMethod">
-                    <option value="transferencia">Transferencia (simulada)</option>
-                    <option value="contra-entrega">Contra entrega (simulado)</option>
-                </select></label><button class="primary" type="submit">Crear pedido</button>
-        </form>
-        <p id="checkoutMsg" role="status"></p>
     </dialog>
     <dialog id="orderDialog"><button class="close" data-close="orderDialog">×</button>
         <h2>Seguimiento del pedido</h2>

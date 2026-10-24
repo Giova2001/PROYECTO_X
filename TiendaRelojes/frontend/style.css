@@ -162,10 +162,63 @@ nav {
     width: 190px
 }
 
+.shop {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 28px;
+    align-items: start
+}
+
 .products {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 30px
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 24px
+}
+
+.basket {
+    position: sticky;
+    top: 84px;
+    border: 1px solid #e4e0db;
+    border-radius: 8px;
+    background: #faf8f6;
+    padding: 18px
+}
+
+.basket h2 {
+    margin: 0 0 8px
+}
+
+.notice {
+    color: #555;
+    font-size: 14px;
+    line-height: 1.45
+}
+
+.cart-link {
+    color: white;
+    border: 1px solid #777;
+    border-radius: 5px;
+    padding: 11px 16px
+}
+
+.cart-link span {
+    display: inline-block;
+    min-width: 1.2em;
+    margin-left: 6px;
+    text-align: center;
+    background: #cba68b;
+    color: #1c1c1c;
+    border-radius: 99px;
+    font-weight: 700
+}
+
+.add-btn {
+    width: 100%
+}
+
+.add-btn:disabled {
+    cursor: not-allowed;
+    opacity: .55
 }
 
 .product {
@@ -351,9 +404,13 @@ textarea {
         display: none
     }
 
+    .shop,
     .products {
-        grid-template-columns: repeat(2, 1fr);
-        gap: 15px
+        grid-template-columns: 1fr
+    }
+
+    .basket {
+        position: static
     }
 
     .section-title {

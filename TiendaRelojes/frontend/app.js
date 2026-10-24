@@ -113,12 +113,33 @@ function renderProducts() {
                         ? 'Disponible'
                         : 'Agotado'}
                 </span>
+
+                <button
+                    class="primary add-btn"
+                    type="button"
+                    data-add="${p.id}"
+                    ${p.stock - p.reserved > 0 ? '' : 'disabled'}
+                >
+                    ${p.stock - p.reserved > 0
+                        ? 'Añadir a la cesta'
+                        : 'Sin existencias'}
+                </button>
             </article>
         `)
         .join('');
 
     document.querySelectorAll('.product').forEach(el => {
-        el.onclick = () => detail(+el.dataset.id);
+        el.onclick = event => {
+            if (event.target.closest('[data-add]')) return;
+            detail(+el.dataset.id);
+        };
+    });
+
+    document.querySelectorAll('[data-add]').forEach(button => {
+        button.onclick = event => {
+            event.stopPropagation();
+            add(+button.dataset.add);
+        };
     });
 }
 
@@ -165,7 +186,7 @@ function detail(id) {
 
     $('#addOne').onclick = () => {
         add(id);
-        close('productDialog');
+        if ($('#productDialog').open) close('productDialog');
     };
 
     show('productDialog');
@@ -180,11 +201,16 @@ function add(id) {
     const p = products.find(x => x.id === id);
     const row = cart.find(x => x.id === id);
 
-    if (
-        !p ||
-        ((row?.quantity || 0) >= p.stock - p.reserved)
-    ) {
-        return alert('No hay suficientes existencias');
+    const available = p ? p.stock - p.reserved : 0;
+
+    if (!p || ((row?.quantity || 0) >= available)) {
+        note(
+            p
+                ? `No hay más existencias de ${p.name}.`
+                : 'Ese reloj ya no está en el catálogo.',
+            true
+        );
+        return;
     }
 
     if (row) {
@@ -197,6 +223,17 @@ function add(id) {
     }
 
     updateCart();
+    note(`${p.name} se agregó a la cesta.`, false);
+    document.getElementById('cesta').scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest'
+    });
+}
+
+function note(text, isError) {
+    const box = $('#cartNotice');
+    box.textContent = text;
+    box.className = isError ? 'notice error' : 'notice success';
 }
 
 
@@ -237,7 +274,7 @@ function updateCart() {
                 </div>
             `;
         }).join('')
-        : 'Tu carrito está vacío';
+        : 'Tu cesta está vacía';
 
     document.querySelectorAll('[data-remove]').forEach(b => {
         b.onclick = () => {
@@ -258,7 +295,6 @@ function updateCart() {
         )
     );
 
-    $('#checkout button[type=submit]').disabled = !cart.length;
 }
 
 
@@ -270,7 +306,6 @@ $('#search').oninput = renderProducts;
 
 $('#cartBtn').onclick = () => {
     updateCart();
-    show('cartDialog');
 };
 
 $('#adminBtn').onclick = async () => {
@@ -283,44 +318,55 @@ $('#adminBtn').onclick = async () => {
    10. REGISTRO DE PEDIDOS
 ========================================================= */
 
-$('#checkout').onsubmit = async e => {
-    e.preventDefault();
+$('#checkout').onsubmit = event => event.preventDefault();
 
-    if (!cart.length) return;
+$('#placeOrder').onclick = async () => {
+    const form = $('#checkout');
 
-    const f = new FormData(e.target);
-    const button = $('#checkout button[type=submit]');
+    if (!cart.length) {
+        note('La cesta está vacía. Añade un reloj antes de crear el pedido.', true);
+        $('#checkoutMsg').textContent = '';
+        return;
+    }
+
+    if (!form.reportValidity()) return;
+
+    const data = new FormData(form);
+    const button = $('#placeOrder');
 
     button.disabled = true;
-
     $('#checkoutMsg').textContent = 'Registrando pedido...';
+    $('#checkoutMsg').className = '';
 
     try {
         const order = await post('/api/orders/orders', {
-            customer: f.get('customer'),
-            phone: f.get('phone'),
-            address: f.get('address'),
-            paymentMethod: f.get('paymentMethod'),
-
-            items: cart.map(x => ({
-                productId: x.id,
-                quantity: x.quantity
+            customer: data.get('customer'),
+            phone: data.get('phone'),
+            address: data.get('address'),
+            paymentMethod: data.get('paymentMethod'),
+            items: cart.map(item => ({
+                productId: item.id,
+                quantity: item.quantity
             }))
         });
 
-        currentOrder = order.id;
+        if (!order?.id) {
+            throw Error('El servicio de pedidos no devolvió el número de pedido.');
+        }
 
+        currentOrder = order.id;
         cart = [];
         updateCart();
+        form.reset();
+        note('Pedido creado. Sigue el estado en la ventana de seguimiento.', false);
+        $('#checkoutMsg').textContent = '';
 
-        close('cartDialog');
-        show('orderDialog');
-
+        if (!$('#orderDialog').open) show('orderDialog');
         await refreshOrder();
 
     } catch (err) {
-        $('#checkoutMsg').textContent =
-            'Error: ' + err.message;
+        $('#checkoutMsg').textContent = 'No se pudo crear el pedido: ' + err.message;
+        $('#checkoutMsg').className = 'error';
 
     } finally {
         button.disabled = false;
