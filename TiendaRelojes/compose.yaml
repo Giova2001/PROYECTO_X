@@ -25,24 +25,21 @@ services:
     build: {context: ., dockerfile: InventoryApi/Dockerfile}
     environment:
       KAFKA_BOOTSTRAP: kafka:9092
-      ConnectionStrings__Db: Data Source=/data/inventory.db
-    volumes: [inventory_data:/data]
+      ConnectionStrings__Db: ${SUPABASE_DB:?Falta SUPABASE_DB en TiendaRelojes/.env}
     depends_on: {kafka: {condition: service_healthy}}
   orders:
     build: {context: ., dockerfile: OrdersApi/Dockerfile}
     environment:
       KAFKA_BOOTSTRAP: kafka:9092
       INVENTORY_URL: http://inventory:8080
-      ConnectionStrings__Db: Data Source=/data/orders.db
-    volumes: [orders_data:/data]
+      ConnectionStrings__Db: ${SUPABASE_DB:?Falta SUPABASE_DB en TiendaRelojes/.env}
     depends_on: {kafka: {condition: service_healthy}, inventory: {condition: service_started}}
   payments:
     build: {context: ., dockerfile: PaymentsApi/Dockerfile}
     environment:
       KAFKA_BOOTSTRAP: kafka:9092
       ORDERS_URL: http://orders:8080
-      ConnectionStrings__Db: Data Source=/data/payments.db
-    volumes: [payments_data:/data]
+      ConnectionStrings__Db: ${SUPABASE_DB:?Falta SUPABASE_DB en TiendaRelojes/.env}
     depends_on: {kafka: {condition: service_healthy}, orders: {condition: service_started}}
   web:
     image: nginx:1.27-alpine
@@ -51,7 +48,3 @@ services:
       - ./frontend:/usr/share/nginx/html:ro
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on: [inventory, orders, payments]
-volumes:
-  inventory_data:
-  orders_data:
-  payments_data:

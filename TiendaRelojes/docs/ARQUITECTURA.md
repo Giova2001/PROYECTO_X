@@ -45,7 +45,7 @@ Inventario: `Product`, `Reservation`, `StockMovement`, `ProcessedInventoryEvent`
 Pedidos: `ShopOrder`, `OrderItem`, `ProcessedOrderEvent`.
 Cobros: `Payment`, `ProcessedPaymentEvent`.
 
-Cada servicio es propietario de su base SQLite. Los eventos incluyen un identificador UUID y los consumidores registran los eventos procesados para evitar volver a aplicar cambios tras recibir el mismo evento.
+Cada servicio es propietario de un esquema en el Postgres de Supabase: `inventory`, `orders` y `payments`. Comparten el proyecto, no las tablas. Los eventos incluyen un identificador UUID y los consumidores registran los eventos procesados para evitar volver a aplicar cambios tras recibir el mismo evento.
 
 ## Patrones y reutilización
 - Microservicios con responsabilidades separadas.

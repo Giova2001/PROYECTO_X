@@ -5,7 +5,7 @@
    Tecnologías:
    - ASP.NET Core
    - Entity Framework Core
-   - SQLite
+   - PostgreSQL (Supabase)
    - Apache Kafka
    - HttpClient
 
@@ -29,7 +29,7 @@
 // 1. IMPORTACIÓN DE DEPENDENCIAS
 // ============================================================
 
-// Permite trabajar con Entity Framework Core y SQLite.
+// Permite trabajar con Entity Framework Core y PostgreSQL (Supabase).
 using Microsoft.EntityFrameworkCore;
 
 // Contiene las clases y eventos compartidos
@@ -49,11 +49,18 @@ var builder = WebApplication.CreateBuilder(args);
 // 2.1. CONFIGURACIÓN DE LA BASE DE DATOS
 // ------------------------------------------------------------
 
-// Registra OrdersDb como contexto de Entity Framework Core.
+// Registra OrdersDb contra el esquema orders de Supabase.
+var supabaseDb = builder.Configuration.GetConnectionString("Db");
+if (string.IsNullOrWhiteSpace(supabaseDb))
+{
+    throw new InvalidOperationException(
+        "Falta ConnectionStrings:Db con la cadena de Postgres de Supabase."
+    );
+}
+
 builder.Services.AddDbContext<OrdersDb>(options =>
-    options.UseSqlite(
-        builder.Configuration.GetConnectionString("Db")
-        ?? "Data Source=/data/orders.db"
+    options.UseNpgsql(supabaseDb, npgsql =>
+        npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "orders")
     )
 );
 
@@ -105,8 +112,9 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider
         .GetRequiredService<OrdersDb>();
 
-    // Crea la base de datos y sus tablas si no existen.
-    db.Database.EnsureCreated();
+    // El historial de migraciones vive en este esquema, así que debe existir antes.
+    db.Database.ExecuteSqlRaw("CREATE SCHEMA IF NOT EXISTS orders;");
+    db.Database.Migrate();
 }
 
 
@@ -208,7 +216,7 @@ app.MapGet(
    2. Consultar productos al microservicio de inventario.
    3. Validar productos y cantidades.
    4. Calcular el total.
-   5. Guardar el pedido en SQLite.
+   5. Guardar el pedido en Supabase.
    6. Publicar evento OrderPlaced en Kafka.
    7. Devolver el pedido registrado.
 */
@@ -376,7 +384,7 @@ app.MapPost(
         }
         catch
         {
-            // El pedido permanece guardado en SQLite,
+            // El pedido permanece guardado en Supabase,
             // aunque falle la publicación del evento.
             return Results.Problem(
                 "Pedido guardado, pero no se pudo publicar " +
@@ -656,6 +664,16 @@ public class OrdersDb(
         ModelBuilder builder
     )
     {
+        builder.HasDefaultSchema("orders");
+
+        builder.Entity<ShopOrder>()
+            .Property(o => o.Total)
+            .HasPrecision(18, 2);
+
+        builder.Entity<OrderItem>()
+            .Property(i => i.UnitPrice)
+            .HasPrecision(18, 2);
+
         // Impide registrar dos veces el mismo evento.
         builder.Entity<ProcessedOrderEvent>()
             .HasIndex(x => x.EventId)

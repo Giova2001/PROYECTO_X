@@ -1,6 +1,6 @@
 # Tiempo & Estilo — Tienda de relojes con microservicios
 
-Proyecto académico basado en el **Tema 6: Sistema de Microservicios con Kafka para el Procesamiento de Datos en Tiempo Real**. Contiene una tienda web responsive, catálogo de relojes, carrito, checkout, gestión básica de inventario, pedidos y cobros **simulados**, tres APIs ASP.NET Core 8, Kafka, SQLite y Docker Compose.
+Proyecto académico basado en el **Tema 6: Sistema de Microservicios con Kafka para el Procesamiento de Datos en Tiempo Real**. Contiene una tienda web responsive, catálogo de relojes, carrito, checkout, gestión básica de inventario, pedidos y cobros **simulados**, tres APIs ASP.NET Core 8, Kafka, PostgreSQL en Supabase y Docker Compose.
 
 ## Requisitos
 - Docker Engine + Docker Compose v2 (o Docker Desktop).
@@ -8,6 +8,10 @@ Proyecto académico basado en el **Tema 6: Sistema de Microservicios con Kafka p
 - Puertos **8088** disponible.
 
 ## Inicio rápido
+
+1. En Supabase, abre **Connect** y copia la cadena directa de Postgres (puerto **5432**, no el 6543).
+2. Copia `.env.example` a `.env` y pega esa cadena en `SUPABASE_DB`, con el formato de claves que muestra el ejemplo.
+3. Levanta la tienda:
 
 ```bash
 docker compose up --build -d
@@ -28,13 +32,15 @@ Abrir **http://localhost:8088**. El arranque inicial puede tardar mientras Kafka
 9. Abrir «Administración» para ver existencias, pedidos, movimientos y registrar relojes.
 
 ## Servicios
-| Servicio | Uso interno | Base de datos |
+| Servicio | Uso interno | Dónde guarda |
 |---|---|---|
-| InventoryApi | productos, ajustes, reservas, movimientos | inventory.db |
-| OrdersApi | pedidos, clientes y estados | orders.db |
-| PaymentsApi | pagos de demostración | payments.db |
+| InventoryApi | productos, ajustes, reservas, movimientos | esquema `inventory` |
+| OrdersApi | pedidos, clientes y estados | esquema `orders` |
+| PaymentsApi | pagos de demostración | esquema `payments` |
 | Kafka | bus de eventos `shop-events` | Kafka |
 | Nginx | frontend y proxy `/api/*` | no aplica |
+
+Los tres esquemas viven en el mismo proyecto de Supabase. Cada API solo lee y escribe el suyo.
 
 ## Endpoints
 - `GET /api/inventory/products`
@@ -68,12 +74,20 @@ curl -X POST http://localhost:8088/api/orders/orders \
 - `compose.yaml`: contenedores, volúmenes y dependencias.
 
 ## Persistencia
-Cada API almacena su SQLite en un volumen Docker. Para reiniciar datos **y borrar pedidos**: `docker compose down -v`. Para detener sin borrar: `docker compose down`.
+Al arrancar, cada API ejecuta su migración y crea su esquema en Supabase si todavía no existe. Inventario carga los cuatro relojes cuando `inventory.Products` está vacía. `docker compose down` detiene los contenedores y **no** borra pedidos ni stock: esos datos quedan en Supabase.
+
+Para vaciar la tienda, ejecuta esto en el editor SQL de Supabase y vuelve a levantar las APIs:
+
+```sql
+drop schema if exists inventory cascade;
+drop schema if exists orders cascade;
+drop schema if exists payments cascade;
+```
 
 ## Avisos importantes
 **Solo para demostración académica/local.** No tiene autenticación, autorización, validación de identidad, pasarela bancaria ni controles de producción. El panel administrativo y los endpoints de escritura están abiertos. No publicar en Internet ni introducir datos personales reales. No se realizan cargos reales. Los mensajes Kafka se procesan de forma asíncrona y pueden tardar unos segundos.
 
-**Limitación de consistencia:** el proyecto es un prototipo educativo; no implementa outbox transaccional, reconciliación automática, expiración de reservas, ni coordinación robusta ante fallas entre guardar en SQLite y publicar en Kafka. Para producción se requieren estos mecanismos, además de seguridad, auditoría, idempotencia de solicitudes HTTP y pruebas de concurrencia.
+**Limitación de consistencia:** el proyecto es un prototipo educativo; no implementa outbox transaccional, reconciliación automática, expiración de reservas, ni coordinación robusta ante fallas entre guardar en Supabase y publicar en Kafka. Para producción se requieren estos mecanismos, además de seguridad, auditoría, idempotencia de solicitudes HTTP y pruebas de concurrencia.
 
 ## Validación
 `dotnet build` compila Shared, InventoryApi, OrdersApi y PaymentsApi. `docker compose up --build -d` publica la tienda en el puerto 8088. Al crear un pedido, OrdersApi publica `OrderPlaced`; InventoryApi reserva existencias y el estado pasa a `awaiting-payment`; al simular el pago aprobado el pedido queda `paid` y el stock baja una unidad. El plan de casos está en `docs/PRUEBAS.md`.

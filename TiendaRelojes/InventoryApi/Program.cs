@@ -1,7 +1,7 @@
 
 /* ============================================================
    MICROSERVICIO DE INVENTARIO
-   Tecnología: ASP.NET Core + Entity Framework Core + SQLite
+   Tecnología: ASP.NET Core + Entity Framework Core + PostgreSQL (Supabase)
    Comunicación: Apache Kafka
 
    FUNCIONALIDADES:
@@ -24,7 +24,7 @@
 // 1. IMPORTACIÓN DE DEPENDENCIAS
 // ============================================================
 
-// Permite trabajar con Entity Framework Core y SQLite.
+// Permite trabajar con Entity Framework Core y PostgreSQL (Supabase).
 using Microsoft.EntityFrameworkCore;
 
 // Contiene las clases compartidas entre microservicios,
@@ -39,11 +39,19 @@ using Shared;
 // Crea el constructor de la aplicación ASP.NET Core.
 var builder = WebApplication.CreateBuilder(args);
 
-// Registra el contexto de base de datos con SQLite.
+// Registra el contexto contra el Postgres de Supabase.
+// Cada servicio usa su propio esquema dentro del mismo proyecto.
+var supabaseDb = builder.Configuration.GetConnectionString("Db");
+if (string.IsNullOrWhiteSpace(supabaseDb))
+{
+    throw new InvalidOperationException(
+        "Falta ConnectionStrings:Db con la cadena de Postgres de Supabase."
+    );
+}
+
 builder.Services.AddDbContext<InventoryDb>(options =>
-    options.UseSqlite(
-        builder.Configuration.GetConnectionString("Db")
-        ?? "Data Source=/data/inventory.db"
+    options.UseNpgsql(supabaseDb, npgsql =>
+        npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "inventory")
     )
 );
 
@@ -78,8 +86,9 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider
         .GetRequiredService<InventoryDb>();
 
-    // Crea la base de datos si todavía no existe.
-    db.Database.EnsureCreated();
+    // El historial de migraciones vive en este esquema, así que debe existir antes.
+    db.Database.ExecuteSqlRaw("CREATE SCHEMA IF NOT EXISTS inventory;");
+    db.Database.Migrate();
 
     // Inserta productos de ejemplo únicamente cuando
     // la tabla de productos está vacía.
@@ -606,6 +615,12 @@ public class InventoryDb(
     /// </summary>
     protected override void OnModelCreating(ModelBuilder builder)
     {
+        builder.HasDefaultSchema("inventory");
+
+        builder.Entity<Product>()
+            .Property(p => p.Price)
+            .HasPrecision(18, 2);
+
         // Impide duplicar identificadores de eventos.
         builder.Entity<ProcessedInventoryEvent>()
             .HasIndex(x => x.EventId)
@@ -877,7 +892,7 @@ public class InventoryWorker(
                         }
                     );
 
-                    // Guarda los cambios en SQLite.
+                    // Guarda los cambios en Supabase.
                     await db.SaveChangesAsync(stoppingToken);
 
 

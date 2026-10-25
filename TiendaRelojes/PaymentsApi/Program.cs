@@ -8,11 +8,18 @@ using Shared;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Configuración de SQLite.
+// Postgres de Supabase. Este servicio solo usa el esquema payments.
+var supabaseDb = builder.Configuration.GetConnectionString("Db");
+if (string.IsNullOrWhiteSpace(supabaseDb))
+{
+    throw new InvalidOperationException(
+        "Falta ConnectionStrings:Db con la cadena de Postgres de Supabase."
+    );
+}
+
 builder.Services.AddDbContext<PaymentsDb>(options =>
-    options.UseSqlite(
-        builder.Configuration.GetConnectionString("Db")
-        ?? "Data Source=/data/payments.db"
+    options.UseNpgsql(supabaseDb, npgsql =>
+        npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "payments")
     )
 );
 
@@ -32,13 +39,14 @@ builder.Services.AddCors(options =>
 var app = builder.Build();
 app.UseCors();
 
-// Crear base de datos si no existe.
+// Crear el esquema payments y sus tablas en Supabase si faltan.
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider
         .GetRequiredService<PaymentsDb>();
 
-    db.Database.EnsureCreated();
+    db.Database.ExecuteSqlRaw("CREATE SCHEMA IF NOT EXISTS payments;");
+    db.Database.Migrate();
 }
 
 
@@ -202,6 +210,12 @@ public class PaymentsDb(
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
+        builder.HasDefaultSchema("payments");
+
+        builder.Entity<Payment>()
+            .Property(p => p.Amount)
+            .HasPrecision(18, 2);
+
         // Un registro de pago por pedido.
         builder.Entity<Payment>()
             .HasIndex(p => p.OrderId)

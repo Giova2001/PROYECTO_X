@@ -24,7 +24,7 @@ El sistema separa inventario, pedidos y cobros en microservicios para facilitar 
 
 ## Decisiones de diseño
 - ASP.NET Core 8 para APIs por compatibilidad con C#.
-- SQLite independiente por servicio para simplificar la demostración.
+- PostgreSQL de Supabase, con un esquema por servicio, para conservar los datos fuera de los contenedores.
 - Kafka para los eventos de negocio.
 - Frontend sin framework para facilitar revisión del código.
 - Docker Compose para levantar todos los componentes.
