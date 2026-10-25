@@ -1,20 +1,20 @@
 {
   "format": 1,
   "restore": {
-    "C:\\Users\\Chris Garcia\\Desktop\\DRS y APR\\TiendaRelojes\\Shared\\Shared.csproj": {}
+    "/home/wenmejia/Escritorio/PROYECTO_X/TiendaRelojes/Shared/Shared.csproj": {}
   },
   "projects": {
-    "C:\\Users\\Chris Garcia\\Desktop\\DRS y APR\\TiendaRelojes\\Shared\\Shared.csproj": {
+    "/home/wenmejia/Escritorio/PROYECTO_X/TiendaRelojes/Shared/Shared.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "C:\\Users\\Chris Garcia\\Desktop\\DRS y APR\\TiendaRelojes\\Shared\\Shared.csproj",
+        "projectUniqueName": "/home/wenmejia/Escritorio/PROYECTO_X/TiendaRelojes/Shared/Shared.csproj",
         "projectName": "Shared",
-        "projectPath": "C:\\Users\\Chris Garcia\\Desktop\\DRS y APR\\TiendaRelojes\\Shared\\Shared.csproj",
-        "packagesPath": "C:\\Users\\Chris Garcia\\.nuget\\packages\\",
-        "outputPath": "C:\\Users\\Chris Garcia\\Desktop\\DRS y APR\\TiendaRelojes\\Shared\\obj\\",
+        "projectPath": "/home/wenmejia/Escritorio/PROYECTO_X/TiendaRelojes/Shared/Shared.csproj",
+        "packagesPath": "/home/wenmejia/.nuget/packages/",
+        "outputPath": "/home/wenmejia/Escritorio/PROYECTO_X/TiendaRelojes/Shared/obj/",
         "projectStyle": "PackageReference",
         "configFilePaths": [
-          "C:\\Users\\Chris Garcia\\AppData\\Roaming\\NuGet\\NuGet.Config"
+          "/home/wenmejia/.nuget/NuGet/NuGet.Config"
         ],
         "originalTargetFrameworks": [
           "net8.0"
@@ -24,7 +24,6 @@
         },
         "frameworks": {
           "net8.0": {
-            "framework": "net8.0",
             "targetAlias": "net8.0",
             "projectReferences": {}
           }
@@ -33,17 +32,10 @@
           "warnAsError": [
             "NU1605"
           ]
-        },
-        "restoreAuditProperties": {
-          "enableAudit": "true",
-          "auditLevel": "low",
-          "auditMode": "direct"
-        },
-        "SdkAnalysisLevel": "10.0.400"
+        }
       },
       "frameworks": {
         "net8.0": {
-          "framework": "net8.0",
           "targetAlias": "net8.0",
           "dependencies": {
             "Confluent.Kafka": {
@@ -62,20 +54,6 @@
           ],
           "assetTargetFallback": true,
           "warn": true,
-          "downloadDependencies": [
-            {
-              "name": "Microsoft.AspNetCore.App.Ref",
-              "version": "[8.0.30, 8.0.30]"
-            },
-            {
-              "name": "Microsoft.NETCore.App.Ref",
-              "version": "[8.0.30, 8.0.30]"
-            },
-            {
-              "name": "Microsoft.WindowsDesktop.App.Ref",
-              "version": "[8.0.30, 8.0.30]"
-            }
-          ],
           "frameworkReferences": {
             "Microsoft.AspNetCore.App": {
               "privateAssets": "none"
@@ -84,7 +62,7 @@
               "privateAssets": "all"
             }
           },
-          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.400/PortableRuntimeIdentifierGraph.json"
+          "runtimeIdentifierGraphPath": "/usr/lib/dotnet/sdk/8.0.132/PortableRuntimeIdentifierGraph.json"
         }
       }
     }
