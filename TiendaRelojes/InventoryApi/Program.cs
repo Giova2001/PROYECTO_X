@@ -79,11 +79,17 @@ builder.Services.AddCors(options =>
     )
 );
 
+// Valida el token emitido por AuthApi. El catálogo sigue siendo público;
+// crear, editar, eliminar y ajustar productos exige rol admin.
+builder.Services.AddShopAuth(builder.Configuration);
+
 // Construye la aplicación.
 var app = builder.Build();
 
 // Habilita CORS.
 app.UseCors();
+app.UseAuthentication();
+app.UseAuthorization();
 
 
 // ============================================================
@@ -240,7 +246,7 @@ app.MapGet(
 /*
    POST /products
 
-   Registra un producto nuevo.
+   Registra un producto nuevo. Solo administradores.
 
    Validaciones:
    - Nombre obligatorio.
@@ -285,7 +291,7 @@ app.MapPost(
             product
         );
     }
-);
+).RequireAuthorization(Policies.Admin);
 
 
 // ------------------------------------------------------------
@@ -338,7 +344,7 @@ app.MapPut(
 
         return Results.Ok(product);
     }
-);
+).RequireAuthorization(Policies.Admin);
 
 
 // ------------------------------------------------------------
@@ -372,7 +378,7 @@ app.MapDelete(
 
         return Results.NoContent();
     }
-);
+).RequireAuthorization(Policies.Admin);
 
 
 // ============================================================
@@ -396,7 +402,7 @@ app.MapGet("/movements", async (InventoryDb db) =>
         .OrderByDescending(m => m.Id)
         .Take(100)
         .ToListAsync()
-);
+).RequireAuthorization(Policies.Admin);
 
 // Reservas creadas por Kafka al recibir OrderPlaced.
 // reserved: todavía apartada. sold: el pago la convirtió en venta.
@@ -406,7 +412,7 @@ app.MapGet("/reservations", async (InventoryDb db) =>
         .OrderByDescending(reservation => reservation.Id)
         .Take(30)
         .ToListAsync()
-);
+).RequireAuthorization(Policies.Admin);
 
 
 // ------------------------------------------------------------
@@ -464,7 +470,7 @@ app.MapPost(
 
         return Results.Ok(product);
     }
-);
+).RequireAuthorization(Policies.Admin);
 
 
 // ============================================================

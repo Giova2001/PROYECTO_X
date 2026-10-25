@@ -7,25 +7,87 @@ const $ = s => document.querySelector(s);
 
 const money = n => '$' + Number(n).toFixed(2);
 
+// localStorage puede fallar (modo privado, bloqueo de cookies):
+// la tienda sigue funcionando, solo sin recordar sesión ni cesta.
+const store = {
+    read(key, fallback) {
+        try {
+            return JSON.parse(localStorage.getItem(key)) ?? fallback;
+        } catch {
+            return fallback;
+        }
+    },
+    write(key, value) {
+        try {
+            if (value === null) localStorage.removeItem(key);
+            else localStorage.setItem(key, JSON.stringify(value));
+        } catch {
+            /* sin almacenamiento */
+        }
+    }
+};
+
 let products = [];
-let cart = [];
+let cart = store.read('te-cart', []).filter(item =>
+    Number.isInteger(item?.id) && Number.isInteger(item?.quantity) && item.quantity > 0
+);
 let currentOrder = null;
+
+// { token, user: { id, name, email, role } } emitido por AuthApi.
+let session = store.read('te-session', null);
+
+const isAdmin = () => session?.user?.role === 'admin';
 
 
 /* =========================================================
    2. COMUNICACIÓN CON LA API
 ========================================================= */
 
+// Convierte la respuesta de error en un texto legible.
+// Las APIs devuelven "texto" en JSON o un ProblemDetails.
+async function errorMessage(r) {
+    const text = await r.text();
+    let message = text;
+
+    try {
+        const body = JSON.parse(text);
+        message = typeof body === 'string'
+            ? body
+            : body?.detail || body?.title || text;
+    } catch {
+        /* texto plano */
+    }
+
+    if (message) return message;
+    if (r.status === 401) return 'Inicia sesión para continuar.';
+    if (r.status === 403) return 'Tu usuario no tiene permiso para esta acción.';
+    return `Error ${r.status}`;
+}
+
 const api = async (path, opts = {}) => {
+    const headers = {
+        'Content-Type': 'application/json'
+    };
+
+    if (session?.token) {
+        headers.Authorization = 'Bearer ' + session.token;
+    }
+
     const r = await fetch(path, {
-        headers: {
-            'Content-Type': 'application/json'
-        },
+        headers,
         ...opts
     });
 
     if (!r.ok) {
-        throw Error(await r.text());
+        const message = await errorMessage(r);
+
+        // Token vencido o inválido: se cierra la sesión local.
+        if (r.status === 401 && session && !path.startsWith('/api/auth/login')) {
+            setSession(null);
+            throw Error('Tu sesión terminó. Inicia sesión de nuevo.');
+        }
+
+        throw Error(message);
     }
 
     return r.status === 204 ? null : r.json();
@@ -82,7 +144,8 @@ async function load() {
     try {
         products = await api('/api/inventory/products');
 
-        renderProducts();
+        // updateCart ajusta la cesta al stock nuevo y redibuja el catálogo.
+        updateCart();
         renderAdminProducts();
 
     } catch (e) {
@@ -271,6 +334,15 @@ function add(id) {
 
     updateCart();
     note(`${p.name} quedó en la cesta (${already + 1}). Puedes añadirlo otra vez.`, false);
+    bumpCartCount();
+}
+
+// Con la cesta cerrada, el contador de la cabecera avisa de que se añadió algo.
+function bumpCartCount() {
+    const count = $('#cartCount');
+    count.classList.remove('bump');
+    void count.offsetWidth;
+    count.classList.add('bump');
 }
 
 function note(text, isError) {
@@ -284,10 +356,34 @@ function note(text, isError) {
    8. ACTUALIZACIÓN DEL CARRITO
 ========================================================= */
 
+// Quita de la cesta lo que ya no existe y baja las cantidades
+// que superan el stock libre. Devuelve los nombres ajustados.
+function fitCartToStock() {
+    const adjusted = [];
+
+    cart = cart
+        .filter(x => products.some(p => p.id === x.id))
+        .map(x => {
+            const p = products.find(p => p.id === x.id);
+            const available = availableUnits(p);
+            if (x.quantity > available) {
+                adjusted.push(p.name);
+                return { ...x, quantity: available };
+            }
+            return x;
+        })
+        .filter(x => x.quantity > 0);
+
+    return adjusted;
+}
+
 function updateCart() {
-    cart = cart.filter(x =>
-        products.some(p => p.id === x.id)
-    );
+    const adjusted = fitCartToStock();
+    if (adjusted.length) {
+        note(`Ajustamos la cesta al stock disponible: ${adjusted.join(', ')}.`, true);
+    }
+
+    store.write('te-cart', cart);
 
     $('#cartCount').textContent = cart.reduce(
         (s, x) => s + x.quantity,
@@ -301,13 +397,21 @@ function updateCart() {
             return `
                 <div class="cart-row">
                     <span>
-                        ${safe(p.name)} × ${x.quantity}
+                        ${safe(p.name)}
+                        <small>${money(p.price)} c/u</small>
+                        <span class="qty-control">
+                            <button type="button" class="smallbtn" data-dec="${x.id}" aria-label="Quitar una unidad">−</button>
+                            <b>${x.quantity}</b>
+                            <button type="button" class="smallbtn" data-inc="${x.id}" aria-label="Añadir una unidad"
+                                ${remainingUnits(p) > 0 ? '' : 'disabled'}>+</button>
+                        </span>
                     </span>
 
                     <span>
                         ${money(p.price * x.quantity)}
 
                         <button
+                            type="button"
                             class="smallbtn"
                             data-remove="${x.id}"
                         >
@@ -329,6 +433,22 @@ function updateCart() {
         };
     });
 
+    document.querySelectorAll('[data-inc]').forEach(b => {
+        b.onclick = () => add(+b.dataset.inc);
+    });
+
+    document.querySelectorAll('[data-dec]').forEach(b => {
+        b.onclick = () => {
+            const line = cart.find(x => x.id === +b.dataset.dec);
+            if (!line) return;
+            line.quantity -= 1;
+            cart = cart.filter(x => x.quantity > 0);
+            updateCart();
+        };
+    });
+
+    $('#clearCart').hidden = !cart.length;
+
     $('#cartTotal').textContent = money(
         cart.reduce(
             (s, x) =>
@@ -341,6 +461,13 @@ function updateCart() {
     renderProducts();
 }
 
+$('#clearCart').onclick = () => {
+    if (!confirm('¿Vaciar la cesta?')) return;
+    cart = [];
+    updateCart();
+    note('La cesta quedó vacía.', false);
+};
+
 
 /* =========================================================
    9. EVENTOS DEL CATÁLOGO Y CARRITO
@@ -350,16 +477,125 @@ $('#search').oninput = renderProducts;
 
 $('#cartBtn').onclick = () => {
     updateCart();
+    show('cesta');
+};
+
+// Un clic en el fondo oscuro (fuera del panel) cierra la cesta.
+$('#cesta').onclick = e => {
+    if (e.target === e.currentTarget) close('cesta');
 };
 
 $('#adminBtn').onclick = async () => {
+    if (!isAdmin()) {
+        openAuth('El panel administrativo es solo para el rol administrador.');
+        return;
+    }
     await refreshAdmin();
     show('adminDialog');
 };
 
 
 /* =========================================================
-   10. REGISTRO DE PEDIDOS
+   10. MÉTODO DE PAGO Y VALIDACIONES DEL CHECKOUT
+========================================================= */
+
+const paymentLabels = {
+    'tarjeta': 'Tarjeta (simulada)',
+    'transferencia': 'Transferencia (simulada)',
+    'contra-entrega': 'Contra entrega (simulado)'
+};
+
+// Muestra solo los campos del método elegido. El fieldset
+// deshabilitado no se valida ni se envía.
+function showPaymentFields() {
+    const method = $('#paymentMethod').value;
+    $('#cardFields').hidden = method !== 'tarjeta';
+    $('#cardFields').disabled = method !== 'tarjeta';
+    $('#transferInfo').hidden = method !== 'transferencia';
+    $('#codInfo').hidden = method !== 'contra-entrega';
+}
+
+$('#paymentMethod').onchange = showPaymentFields;
+
+const digitsOnly = value => String(value || '').replace(/\D/g, '');
+
+function cardBrand(number) {
+    if (/^4/.test(number)) return 'Visa';
+    if (/^3[47]/.test(number)) return 'Amex';
+    if (/^(5[1-5]|2(2[2-9]|[3-6]\d|7[01]|720))/.test(number)) return 'Mastercard';
+    return '';
+}
+
+// Algoritmo de Luhn: el mismo que valida OrdersApi.
+function luhn(number) {
+    let sum = 0;
+    let doubleIt = false;
+    for (let i = number.length - 1; i >= 0; i--) {
+        let digit = +number[i];
+        if (doubleIt) {
+            digit *= 2;
+            if (digit > 9) digit -= 9;
+        }
+        sum += digit;
+        doubleIt = !doubleIt;
+    }
+    return sum % 10 === 0;
+}
+
+function cardExpired(expiry) {
+    const match = /^(0[1-9]|1[0-2])\/(\d{2})$/.exec(expiry);
+    if (!match) return true;
+    const endOfMonth = new Date(2000 + +match[2], +match[1], 1);
+    return endOfMonth <= new Date();
+}
+
+// Formatea el número en grupos de 4 mientras se escribe.
+$('#checkout [name=cardNumber]').oninput = event => {
+    const input = event.target;
+    const number = digitsOnly(input.value).slice(0, 19);
+    input.value = number.replace(/(\d{4})(?=\d)/g, '$1 ');
+    $('#cardBrand').textContent = cardBrand(number);
+    input.setCustomValidity('');
+};
+
+// Inserta la barra de MM/AA.
+$('#checkout [name=cardExpiry]').oninput = event => {
+    const input = event.target;
+    const digits = digitsOnly(input.value).slice(0, 4);
+    input.value = digits.length > 2 ? digits.slice(0, 2) + '/' + digits.slice(2) : digits;
+    input.setCustomValidity('');
+};
+
+$('#checkout [name=cardCvv]').oninput = event => {
+    event.target.value = digitsOnly(event.target.value).slice(0, 4);
+    event.target.setCustomValidity('');
+};
+
+// Reglas que el HTML no expresa solo: Luhn, vencimiento y CVV según la marca.
+function checkCard(form) {
+    const number = form.elements.cardNumber;
+    const expiry = form.elements.cardExpiry;
+    const cvv = form.elements.cardCvv;
+    const digits = digitsOnly(number.value);
+
+    number.setCustomValidity(
+        digits.length >= 13 && digits.length <= 19 && luhn(digits)
+            ? ''
+            : 'El número de tarjeta no es válido.'
+    );
+    expiry.setCustomValidity(
+        cardExpired(expiry.value) ? 'La tarjeta está vencida o la fecha no es válida (MM/AA).' : ''
+    );
+
+    const cvvLength = cardBrand(digits) === 'Amex' ? 4 : 3;
+    cvv.setCustomValidity(
+        cvv.value.length === cvvLength ? '' : `El CVV debe tener ${cvvLength} dígitos.`
+    );
+}
+
+
+/* =========================================================
+   10B. REGISTRO DE PEDIDOS
 ========================================================= */
 
 $('#checkout').onsubmit = event => event.preventDefault();
@@ -369,7 +605,9 @@ function setOrderButton(busy) {
     button.disabled = busy;
     button.classList.toggle('is-busy', busy);
     button.setAttribute('aria-busy', busy ? 'true' : 'false');
-    button.textContent = busy ? 'Creando pedido...' : 'Crear pedido';
+    button.textContent = busy
+        ? 'Creando pedido...'
+        : session ? 'Crear pedido' : 'Inicia sesión para comprar';
 }
 
 $('#placeOrder').onclick = async () => {
@@ -383,8 +621,17 @@ $('#placeOrder').onclick = async () => {
         return;
     }
 
+    if (!session) {
+        openAuth('Inicia sesión o crea una cuenta para crear el pedido. Tu cesta se conserva.');
+        return;
+    }
+
+    if ($('#paymentMethod').value === 'tarjeta') {
+        checkCard(form);
+    }
+
     if (!form.reportValidity()) {
-        message.textContent = 'Completa nombre, teléfono y dirección. El pedido todavía no se envía.';
+        message.textContent = 'Revisa los campos marcados. El pedido todavía no se envía.';
         message.className = 'error';
         return;
     }
@@ -392,15 +639,39 @@ $('#placeOrder').onclick = async () => {
     const data = new FormData(form);
     setOrderButton(true);
     note('Creando el pedido. Esto puede tardar unos segundos.', false);
-    message.textContent = 'Enviando el pedido y publicando el evento...';
+    message.textContent = 'Comprobando existencias...';
     message.className = 'notice busy-msg';
 
     try {
+        // Vuelve a pedir el stock: otro cliente pudo reservar mientras tanto.
+        const before = JSON.stringify(cart);
+        products = await api('/api/inventory/products');
+        updateCart();
+
+        if (JSON.stringify(cart) !== before) {
+            message.textContent = cart.length
+                ? 'El stock cambió y ajustamos la cesta. Revísala y vuelve a pulsar «Crear pedido».'
+                : 'Los relojes de tu cesta ya no tienen existencias.';
+            message.className = 'error';
+            return;
+        }
+
+        message.textContent = 'Enviando el pedido y publicando el evento...';
+
+        const paymentMethod = data.get('paymentMethod');
         const order = await post('/api/orders/orders', {
             customer: data.get('customer'),
             phone: data.get('phone'),
             address: data.get('address'),
-            paymentMethod: data.get('paymentMethod'),
+            paymentMethod,
+            card: paymentMethod === 'tarjeta'
+                ? {
+                    holder: data.get('cardHolder'),
+                    number: digitsOnly(data.get('cardNumber')),
+                    expiry: data.get('cardExpiry'),
+                    cvv: data.get('cardCvv')
+                }
+                : null,
             items: cart.map(item => ({
                 productId: item.id,
                 quantity: item.quantity
@@ -416,6 +687,9 @@ $('#placeOrder').onclick = async () => {
         cart = [];
         updateCart();
         form.reset();
+        $('#cardBrand').textContent = '';
+        showPaymentFields();
+        fillCustomerName();
         note('Pedido creado. Sigue el estado en la ventana de seguimiento.', false);
         message.textContent = 'Pedido creado. Abriendo el seguimiento...';
         message.className = 'success';
@@ -502,8 +776,12 @@ async function refreshOrder() {
 
                 <p>
                     <b>Forma de pago:</b>
-                    ${safe(o.paymentMethod)}
+                    ${safe(paymentLabels[o.paymentMethod] || o.paymentMethod)}
+                    ${o.paymentDetail ? `· ${safe(o.paymentDetail)}` : ''}
                 </p>
+                ${o.paymentMethod === 'transferencia' && o.status === 'awaiting-payment'
+                    ? `<p class="muted">Referencia de la transferencia: ${safe(String(o.id).slice(0, 8).toUpperCase())}</p>`
+                    : ''}
 
                 ${lines ? `<p><b>Relojes del pedido</b></p><ul class="reserve-list">${lines}</ul>` : ''}
                 <p class="reserve">${safe(reservationNote(o.status))}</p>
@@ -758,6 +1036,7 @@ function renderAdminOrders(orders) {
                 ${safe(order.customer)}
                 <br>
                 <small>${safe(statuses[order.status] || order.status)}</small>
+                ${order.email ? `<br><small class="muted">${safe(order.email)}</small>` : ''}
             </span>
             <span class="order-actions">
                 <b>${money(order.total)}</b>
@@ -797,6 +1076,9 @@ function openOrderEditor(id) {
             <label>Dirección<input name="address" value="${safe(order.address)}" required></label>
             <label>Pago
                 <select name="paymentMethod">
+                    ${order.paymentMethod === 'tarjeta'
+                        ? `<option value="tarjeta" selected>Tarjeta ${safe(order.paymentDetail)}</option>`
+                        : ''}
                     <option value="transferencia" ${order.paymentMethod === 'transferencia' ? 'selected' : ''}>Transferencia</option>
                     <option value="contra-entrega" ${order.paymentMethod === 'contra-entrega' ? 'selected' : ''}>Contra entrega</option>
                 </select>
@@ -883,17 +1165,58 @@ async function deleteOrder(id) {
     }
 }
 
+function renderAdminUsers(users) {
+    const box = $('#adminUsers');
+
+    box.innerHTML = users.map(user => `
+        <div class="admin-row">
+            <span>
+                ${safe(user.name)}
+                <br>
+                <small>${safe(user.email)}</small>
+            </span>
+            <select class="role-select" data-role="${user.id}" aria-label="Rol de ${safe(user.name)}">
+                <option value="cliente" ${user.role === 'cliente' ? 'selected' : ''}>Cliente</option>
+                <option value="admin" ${user.role === 'admin' ? 'selected' : ''}>Administrador</option>
+            </select>
+        </div>
+    `).join('') || 'Sin usuarios';
+
+    box.querySelectorAll('[data-role]').forEach(select => {
+        select.onchange = async () => {
+            try {
+                await put(`/api/auth/users/${select.dataset.role}/role`, {
+                    role: select.value
+                });
+            } catch (error) {
+                alert(error.message || 'No se pudo cambiar el rol.');
+            }
+            await refreshAdmin();
+        };
+    });
+}
+
 async function refreshAdmin() {
     await load();
 
     try {
-        const [orders, moves] = await Promise.all([
+        const [orders, moves, users] = await Promise.all([
             api('/api/orders/orders'),
-            api('/api/inventory/movements')
+            api('/api/inventory/movements'),
+            // Si AuthApi falla, el resto del panel sigue funcionando.
+            api('/api/auth/users').catch(error => {
+                console.error(error);
+                return null;
+            })
         ]);
 
         renderReservations(reservationsFromOrders(orders));
         renderAdminOrders(orders);
+
+        // El polling no debe borrar la selección mientras el admin elige un rol.
+        if (users && !$('#adminUsers').contains(document.activeElement)) {
+            renderAdminUsers(users);
+        }
 
         // Últimos 10 movimientos de inventario
         $('#adminMovements').innerHTML = moves
@@ -946,7 +1269,192 @@ $('#newProduct').onsubmit = async e => {
 
 
 /* =========================================================
-   18. INICIALIZACIÓN DE LA APLICACIÓN
+   18. SESIÓN: INICIO, REGISTRO Y ROLES
 ========================================================= */
 
+function fillCustomerName() {
+    const input = $('#checkout [name=customer]');
+    if (session && !input.value) input.value = session.user.name;
+}
+
+// Muestra u oculta lo que depende del rol.
+function renderSession() {
+    const logged = !!session;
+
+    $('#loginBtn').hidden = logged;
+    $('#userBox').hidden = !logged;
+    $('#ordersBtn').hidden = !logged;
+    $('#adminBtn').hidden = !isAdmin();
+    $('#loginHint').hidden = logged;
+    $('#userName').textContent = logged
+        ? `${session.user.name}${isAdmin() ? ' · admin' : ''}`
+        : '';
+
+    if (!$('#placeOrder').classList.contains('is-busy')) setOrderButton(false);
+    fillCustomerName();
+}
+
+function setSession(value) {
+    session = value;
+    store.write('te-session', value);
+
+    if (!value) {
+        if ($('#adminDialog').open) close('adminDialog');
+        if ($('#myOrdersDialog').open) close('myOrdersDialog');
+    }
+
+    renderSession();
+}
+
+function switchAuthTab(tab) {
+    document.querySelectorAll('.auth-tabs .tab').forEach(button => {
+        button.classList.toggle('active', button.dataset.tab === tab);
+    });
+    $('#loginForm').hidden = tab !== 'login';
+    $('#registerForm').hidden = tab !== 'register';
+    $('#authMsg').textContent = '';
+}
+
+document.querySelectorAll('.auth-tabs .tab').forEach(button => {
+    button.onclick = () => switchAuthTab(button.dataset.tab);
+});
+
+function openAuth(reason = '') {
+    $('#authReason').textContent = reason;
+    $('#authReason').hidden = !reason;
+    switchAuthTab('login');
+    if (!$('#authDialog').open) show('authDialog');
+}
+
+async function submitAuth(form, url, body) {
+    const message = $('#authMsg');
+    const button = form.querySelector('button[type=submit]');
+    button.disabled = true;
+    message.textContent = 'Comprobando...';
+    message.className = 'notice';
+
+    try {
+        const result = await post(url, body);
+        setSession({ token: result.token, user: result.user });
+        form.reset();
+        close('authDialog');
+        note(`Hola, ${result.user.name}. Ya puedes crear tu pedido.`, false);
+    } catch (error) {
+        message.textContent = error.message;
+        message.className = 'error';
+    } finally {
+        button.disabled = false;
+    }
+}
+
+$('#loginForm').onsubmit = event => {
+    event.preventDefault();
+    const data = new FormData(event.target);
+    submitAuth(event.target, '/api/auth/login', {
+        email: data.get('email'),
+        password: data.get('password')
+    });
+};
+
+$('#registerForm').onsubmit = event => {
+    event.preventDefault();
+    const form = event.target;
+    const data = new FormData(form);
+
+    form.elements.confirm.setCustomValidity(
+        data.get('password') === data.get('confirm') ? '' : 'Las contraseñas no coinciden.'
+    );
+    if (!form.reportValidity()) return;
+
+    submitAuth(form, '/api/auth/register', {
+        name: data.get('name'),
+        email: data.get('email'),
+        password: data.get('password')
+    });
+};
+
+$('#registerForm [name=confirm]').oninput = event => event.target.setCustomValidity('');
+
+$('#loginBtn').onclick = () => openAuth();
+
+$('#logoutBtn').onclick = () => {
+    setSession(null);
+    note('Cerraste sesión. Tu cesta sigue guardada.', false);
+};
+
+
+/* =========================================================
+   19. MIS PEDIDOS
+========================================================= */
+
+async function refreshMyOrders() {
+    const box = $('#myOrders');
+
+    try {
+        const orders = await api('/api/orders/orders/mine');
+
+        box.innerHTML = orders.map(order => `
+            <div class="admin-row">
+                <span>
+                    ${safe(String(order.id).slice(0, 8).toUpperCase())}
+                    · ${new Date(order.createdAt).toLocaleDateString('es-SV')}
+                    <br>
+                    <small>${safe(statuses[order.status] || order.status)}
+                        · ${safe(paymentLabels[order.paymentMethod] || order.paymentMethod)}</small>
+                </span>
+                <span class="order-actions">
+                    <b>${money(order.total)}</b>
+                    <button type="button" class="smallbtn" data-track="${order.id}">Ver</button>
+                </span>
+            </div>
+        `).join('') || '<p class="muted">Todavía no tienes pedidos.</p>';
+
+        box.querySelectorAll('[data-track]').forEach(button => {
+            button.onclick = async () => {
+                currentOrder = button.dataset.track;
+                close('myOrdersDialog');
+                show('orderDialog');
+                await refreshOrder();
+            };
+        });
+    } catch (error) {
+        box.innerHTML = `<p class="error">${safe(error.message)}</p>`;
+    }
+}
+
+$('#ordersBtn').onclick = async () => {
+    $('#myOrders').textContent = 'Cargando...';
+    show('myOrdersDialog');
+    await refreshMyOrders();
+};
+
+
+/* =========================================================
+   20. INICIALIZACIÓN DE LA APLICACIÓN
+========================================================= */
+
+// Comprueba que la sesión guardada siga vigente y actualiza el rol.
+async function restoreSession() {
+    if (!session?.token) return;
+
+    try {
+        const user = await api('/api/auth/me');
+
+        // El token guarda el rol con el que se firmó: si un admin
+        // lo cambió, hace falta un token nuevo.
+        if (user.role !== session.user.role) {
+            setSession(null);
+            openAuth('Tu rol cambió. Inicia sesión de nuevo para aplicar los permisos.');
+            return;
+        }
+
+        setSession({ ...session, user });
+    } catch (error) {
+        console.error(error);
+    }
+}
+
+showPaymentFields();
+renderSession();
+restoreSession();
 load();
