@@ -36,6 +36,15 @@ const post = (url, data) => api(url, {
     body: JSON.stringify(data)
 });
 
+const put = (url, data) => api(url, {
+    method: 'PUT',
+    body: JSON.stringify(data)
+});
+
+const remove = (url) => api(url, {
+    method: 'DELETE'
+});
+
 
 /* =========================================================
    3. SEGURIDAD Y VENTANAS MODALES
@@ -89,14 +98,38 @@ async function load() {
    5. CATÁLOGO DE PRODUCTOS
 ========================================================= */
 
+function cartQuantity(id) {
+    return cart.find(item => item.id === id)?.quantity || 0;
+}
+
+function availableUnits(p) {
+    return Math.max(0, p.stock - p.reserved);
+}
+
+function remainingUnits(p) {
+    return Math.max(0, availableUnits(p) - cartQuantity(p.id));
+}
+
+function stockLabel(p) {
+    const available = availableUnits(p);
+    if (available > 0) return `${available} disponibles`;
+    if (p.reserved > 0) return 'Apartado por un pedido';
+    return 'Agotado';
+}
+
 function renderProducts() {
     const term = $('#search').value.toLowerCase();
 
-    $('#products').innerHTML = products
-        .filter(p =>
-            p.name.toLowerCase().includes(term) ||
-            p.category.toLowerCase().includes(term)
-        )
+    const matched = products.filter(p =>
+        p.name.toLowerCase().includes(term) ||
+        p.category.toLowerCase().includes(term)
+    );
+    const emptyMessage = products.length
+        ? 'Ningún reloj coincide con la búsqueda.'
+        : 'No hay relojes en el catálogo.';
+
+    $('#products').innerHTML = matched.length
+        ? matched
         .map(p => `
             <article class="product" data-id="${p.id}">
                 <img
@@ -108,25 +141,29 @@ function renderProducts() {
 
                 <p>${money(p.price)}</p>
 
-                <span class="muted">
-                    ${p.stock - p.reserved > 0
-                        ? 'Disponible'
-                        : 'Agotado'}
-                </span>
+                <span class="muted">${stockLabel(p)}</span>
+                ${p.reserved > 0
+                    ? `<span class="reserve">${p.reserved} reservado${p.reserved === 1 ? '' : 's'}</span>`
+                    : ''}
 
                 <button
                     class="primary add-btn"
                     type="button"
                     data-add="${p.id}"
-                    ${p.stock - p.reserved > 0 ? '' : 'disabled'}
+                    ${remainingUnits(p) > 0 ? '' : 'disabled'}
                 >
-                    ${p.stock - p.reserved > 0
+                    ${remainingUnits(p) > 0
                         ? 'Añadir a la cesta'
-                        : 'Sin existencias'}
+                        : availableUnits(p) > 0
+                            ? 'Ya están en la cesta'
+                            : p.reserved > 0
+                                ? 'Reservado'
+                                : 'Sin existencias'}
                 </button>
             </article>
         `)
-        .join('');
+        .join('')
+        : `<p class="muted catalog-empty">${emptyMessage}</p>`;
 
     document.querySelectorAll('.product').forEach(el => {
         el.onclick = event => {
@@ -169,16 +206,21 @@ function detail(id) {
 
                 <p>${safe(p.description)}</p>
 
-                <p class="muted">
-                    ${p.stock - p.reserved} unidades disponibles
-                </p>
+                <p class="muted">${stockLabel(p)}</p>
+                ${p.reserved > 0
+                    ? `<p class="reserve">${p.reserved} reservado${p.reserved === 1 ? '' : 's'} por pedidos en curso</p>`
+                    : ''}
 
                 <button
                     id="addOne"
                     class="primary"
-                    ${p.stock - p.reserved <= 0 ? 'disabled' : ''}
+                    ${remainingUnits(p) <= 0 ? 'disabled' : ''}
                 >
-                    Añadir a la cesta
+                    ${remainingUnits(p) > 0
+                        ? 'Añadir a la cesta'
+                        : availableUnits(p) > 0
+                            ? 'Ya están en la cesta'
+                            : (p.reserved > 0 ? 'Reservado' : 'Sin existencias')}
                 </button>
             </div>
         </div>
@@ -186,7 +228,7 @@ function detail(id) {
 
     $('#addOne').onclick = () => {
         add(id);
-        if ($('#productDialog').open) close('productDialog');
+        if ($('#productDialog').open) detail(id);
     };
 
     show('productDialog');
@@ -199,22 +241,27 @@ function detail(id) {
 
 function add(id) {
     const p = products.find(x => x.id === id);
-    const row = cart.find(x => x.id === id);
+    const available = p ? availableUnits(p) : 0;
+    const already = cartQuantity(id);
 
-    const available = p ? p.stock - p.reserved : 0;
-
-    if (!p || ((row?.quantity || 0) >= available)) {
+    if (!p || available <= 0) {
         note(
             p
-                ? `No hay más existencias de ${p.name}.`
+                ? `No hay existencias de ${p.name}.`
                 : 'Ese reloj ya no está en el catálogo.',
             true
         );
         return;
     }
 
-    if (row) {
-        row.quantity++;
+    if (already >= available) {
+        note(`Ya están en la cesta las ${available} unidades disponibles de ${p.name}.`, true);
+        return;
+    }
+
+    const line = cart.find(item => item.id === id);
+    if (line) {
+        line.quantity += 1;
     } else {
         cart.push({
             id,
@@ -223,11 +270,7 @@ function add(id) {
     }
 
     updateCart();
-    note(`${p.name} se agregó a la cesta.`, false);
-    document.getElementById('cesta').scrollIntoView({
-        behavior: 'smooth',
-        block: 'nearest'
-    });
+    note(`${p.name} quedó en la cesta (${already + 1}). Puedes añadirlo otra vez.`, false);
 }
 
 function note(text, isError) {
@@ -295,6 +338,7 @@ function updateCart() {
         )
     );
 
+    renderProducts();
 }
 
 
@@ -320,23 +364,36 @@ $('#adminBtn').onclick = async () => {
 
 $('#checkout').onsubmit = event => event.preventDefault();
 
+function setOrderButton(busy) {
+    const button = $('#placeOrder');
+    button.disabled = busy;
+    button.classList.toggle('is-busy', busy);
+    button.setAttribute('aria-busy', busy ? 'true' : 'false');
+    button.textContent = busy ? 'Creando pedido...' : 'Crear pedido';
+}
+
 $('#placeOrder').onclick = async () => {
     const form = $('#checkout');
+    const message = $('#checkoutMsg');
 
     if (!cart.length) {
         note('La cesta está vacía. Añade un reloj antes de crear el pedido.', true);
-        $('#checkoutMsg').textContent = '';
+        message.textContent = 'Añade un reloj para poder crear el pedido.';
+        message.className = 'error';
         return;
     }
 
-    if (!form.reportValidity()) return;
+    if (!form.reportValidity()) {
+        message.textContent = 'Completa nombre, teléfono y dirección. El pedido todavía no se envía.';
+        message.className = 'error';
+        return;
+    }
 
     const data = new FormData(form);
-    const button = $('#placeOrder');
-
-    button.disabled = true;
-    $('#checkoutMsg').textContent = 'Registrando pedido...';
-    $('#checkoutMsg').className = '';
+    setOrderButton(true);
+    note('Creando el pedido. Esto puede tardar unos segundos.', false);
+    message.textContent = 'Enviando el pedido y publicando el evento...';
+    message.className = 'notice busy-msg';
 
     try {
         const order = await post('/api/orders/orders', {
@@ -350,26 +407,29 @@ $('#placeOrder').onclick = async () => {
             }))
         });
 
-        if (!order?.id) {
+        const orderId = order?.id || order?.Id;
+        if (!orderId) {
             throw Error('El servicio de pedidos no devolvió el número de pedido.');
         }
 
-        currentOrder = order.id;
+        currentOrder = orderId;
         cart = [];
         updateCart();
         form.reset();
         note('Pedido creado. Sigue el estado en la ventana de seguimiento.', false);
-        $('#checkoutMsg').textContent = '';
+        message.textContent = 'Pedido creado. Abriendo el seguimiento...';
+        message.className = 'success';
 
         if (!$('#orderDialog').open) show('orderDialog');
         await refreshOrder();
 
     } catch (err) {
-        $('#checkoutMsg').textContent = 'No se pudo crear el pedido: ' + err.message;
-        $('#checkoutMsg').className = 'error';
+        message.textContent = 'No se pudo crear el pedido: ' + err.message;
+        message.className = 'error';
+        note('El pedido no se registró. Revisa el mensaje bajo el botón.', true);
 
     } finally {
-        button.disabled = false;
+        setOrderButton(false);
     }
 };
 
@@ -392,6 +452,27 @@ const statuses = {
    12. CONSULTAR ESTADO DEL PEDIDO
 ========================================================= */
 
+let catalogSyncKey = '';
+
+function reservationNote(status) {
+    if (status === 'pending-stock') {
+        return 'Kafka está apartando estos relojes en inventario.';
+    }
+    if (status === 'awaiting-payment') {
+        return 'Kafka ya reservó estas piezas. Siguen apartadas hasta el pago.';
+    }
+    if (status === 'paid') {
+        return 'El pago confirmó la venta. La reserva salió del inventario.';
+    }
+    if (status === 'rejected') {
+        return 'No había existencias libres. Kafka no dejó ninguna reserva.';
+    }
+    if (status === 'payment-failed' || status === 'cancelled') {
+        return 'La reserva se liberó y los relojes volvieron a estar disponibles.';
+    }
+    return '';
+}
+
 async function refreshOrder() {
     if (!currentOrder) return;
 
@@ -399,6 +480,10 @@ async function refreshOrder() {
         const o = await api(
             '/api/orders/orders/' + currentOrder
         );
+        const items = o.items || [];
+        const lines = items.map(item => `
+            <li>${safe(item.name)} × ${item.quantity}</li>
+        `).join('');
 
         $('#orderStatus').innerHTML = `
             <div class="status">
@@ -419,6 +504,9 @@ async function refreshOrder() {
                     <b>Forma de pago:</b>
                     ${safe(o.paymentMethod)}
                 </p>
+
+                ${lines ? `<p><b>Relojes del pedido</b></p><ul class="reserve-list">${lines}</ul>` : ''}
+                <p class="reserve">${safe(reservationNote(o.status))}</p>
             </div>
 
             <p class="muted">
@@ -431,11 +519,17 @@ async function refreshOrder() {
         $('#approvePayment').disabled = !enabled;
         $('#rejectPayment').disabled = !enabled;
 
+        const syncKey = `${o.id}:${o.status}`;
         if (
-            o.status === 'paid' ||
-            o.status === 'rejected' ||
-            o.status === 'payment-failed'
+            syncKey !== catalogSyncKey &&
+            (
+                o.status === 'awaiting-payment' ||
+                o.status === 'paid' ||
+                o.status === 'rejected' ||
+                o.status === 'payment-failed'
+            )
         ) {
+            catalogSyncKey = syncKey;
             await load();
         }
 
@@ -449,7 +543,30 @@ async function refreshOrder() {
    13. SIMULACIÓN DE PAGOS
 ========================================================= */
 
+async function waitForOrderStatus(expected) {
+    for (let attempt = 0; attempt < 8; attempt++) {
+        try {
+            const order = await api('/api/orders/orders/' + currentOrder);
+            if (expected.includes(order.status)) return order;
+        } catch (error) {
+            console.error(error);
+        }
+        await new Promise(resolve => setTimeout(resolve, 400));
+    }
+    return null;
+}
+
 async function simulate(result) {
+    const approve = $('#approvePayment');
+    const reject = $('#rejectPayment');
+    approve.disabled = true;
+    reject.disabled = true;
+
+    if (result === 'approved') {
+        approve.classList.add('is-busy');
+        approve.textContent = 'Confirmando pago...';
+    }
+
     try {
         await post(
             '/api/payments/payments/' +
@@ -458,10 +575,25 @@ async function simulate(result) {
             { result }
         );
 
+        if (result === 'approved') {
+            await waitForOrderStatus(['paid']);
+            await load();
+            if ($('#orderDialog').open) close('orderDialog');
+            note('Pago aprobado. El pedido quedó registrado.', false);
+            $('#checkoutMsg').textContent = 'Pago aprobado. Puedes seguir comprando.';
+            $('#checkoutMsg').className = 'success';
+            return;
+        }
+
         await refreshOrder();
 
     } catch (e) {
-        alert(e.message);
+        $('#orderStatus').innerHTML = `<p class="error">No se pudo simular el pago: ${safe(e.message)}</p>`;
+
+    } finally {
+        approve.classList.remove('is-busy');
+        approve.textContent = 'Simular pago aprobado';
+        if ($('#orderDialog').open) await refreshOrder();
     }
 }
 
@@ -478,9 +610,17 @@ $('#rejectPayment').onclick = () => {
    14. ACTUALIZACIÓN AUTOMÁTICA DEL PEDIDO
 ========================================================= */
 
+let adminTick = false;
+
 setInterval(() => {
     if ($('#orderDialog').open) {
         refreshOrder();
+    }
+    if ($('#adminDialog').open && !adminTick) {
+        adminTick = true;
+        refreshAdmin().finally(() => {
+            adminTick = false;
+        });
     }
 }, 2500);
 
@@ -498,7 +638,7 @@ function renderAdminProducts() {
 
                     <br>
 
-                    <small>
+                    <small class="${p.reserved > 0 ? 'reserve' : ''}">
                         Stock ${p.stock},
                         reservado ${p.reserved}
                     </small>
@@ -550,6 +690,199 @@ function renderAdminProducts() {
    16. ACTUALIZACIÓN DEL PANEL ADMINISTRATIVO
 ========================================================= */
 
+const reservationLabels = {
+    pending: 'Kafka está apartando',
+    reserved: 'Reservado ahora',
+    sold: 'Reservado y luego vendido',
+    released: 'Reserva liberada'
+};
+
+function reservationsFromOrders(orders) {
+    return orders.flatMap(order => {
+        const status = order.status === 'pending-stock'
+            ? 'pending'
+            : order.status === 'awaiting-payment'
+                ? 'reserved'
+                : order.status === 'paid'
+                    ? 'sold'
+                    : 'released';
+
+        return (order.items || []).map(item => ({
+            status,
+            productId: item.productId,
+            quantity: item.quantity,
+            orderId: order.id
+        }));
+    });
+}
+
+function renderReservations(rows) {
+    const box = $('#adminReservations');
+    if (!box) return;
+
+    const active = rows.filter(row => row.status === 'reserved');
+    box.innerHTML = rows.length
+        ? `
+            <p class="${active.length ? 'reserve' : 'muted'}">
+                ${active.length
+                    ? `${active.reduce((sum, row) => sum + row.quantity, 0)} reloj(es) apartados en este momento.`
+                    : 'No hay apartados activos. Al pagar, la reserva pasa a venta y el contador vuelve a 0.'}
+            </p>
+            ${rows.slice(0, 8).map(row => {
+                const product = products.find(item => item.id === row.productId);
+                return `
+                    <div class="admin-row">
+                        <span>
+                            ${safe(product?.name || 'Producto #' + row.productId)} × ${row.quantity}
+                            <br>
+                            <small>${safe(reservationLabels[row.status] || row.status)}</small>
+                        </span>
+                        <b>${safe(String(row.orderId).slice(0, 8))}</b>
+                    </div>
+                `;
+            }).join('')}
+        `
+        : '<p class="muted">Kafka todavía no ha reservado ningún reloj.</p>';
+}
+
+let latestOrders = [];
+let editingOrderId = null;
+
+function renderAdminOrders(orders) {
+    latestOrders = orders;
+    const box = $('#adminOrders');
+
+    box.innerHTML = orders.slice(0, 12).map(order => `
+        <div class="admin-row">
+            <span>
+                ${safe(order.customer)}
+                <br>
+                <small>${safe(statuses[order.status] || order.status)}</small>
+            </span>
+            <span class="order-actions">
+                <b>${money(order.total)}</b>
+                <button type="button" class="smallbtn" data-edit="${order.id}">Editar</button>
+                <button type="button" class="smallbtn" data-delete="${order.id}">Eliminar</button>
+            </span>
+        </div>
+    `).join('') || 'Sin pedidos';
+
+    box.querySelectorAll('[data-edit]').forEach(button => {
+        button.onclick = () => openOrderEditor(button.dataset.edit);
+    });
+
+    box.querySelectorAll('[data-delete]').forEach(button => {
+        button.onclick = () => deleteOrder(button.dataset.delete);
+    });
+}
+
+function openOrderEditor(id) {
+    const order = latestOrders.find(item => item.id === id);
+    const editor = $('#orderEditor');
+    if (!order || !editor) return;
+
+    editingOrderId = id;
+    const canChangeStock = order.status === 'awaiting-payment' || order.status === 'paid';
+
+    editor.innerHTML = `
+        <form class="order-editor" id="editOrderForm">
+            <h4>Pedido ${safe(String(order.id).slice(0, 8))}</h4>
+            <p class="muted">
+                ${canChangeStock
+                    ? 'Si pides más unidades, Kafka aparta o descuenta stock. Si pides menos, Kafka devuelve las unidades.'
+                    : 'Este pedido ya no modifica el inventario. Puedes eliminarlo.'}
+            </p>
+            <label>Nombre<input name="customer" value="${safe(order.customer)}" required></label>
+            <label>Teléfono<input name="phone" value="${safe(order.phone)}" required></label>
+            <label>Dirección<input name="address" value="${safe(order.address)}" required></label>
+            <label>Pago
+                <select name="paymentMethod">
+                    <option value="transferencia" ${order.paymentMethod === 'transferencia' ? 'selected' : ''}>Transferencia</option>
+                    <option value="contra-entrega" ${order.paymentMethod === 'contra-entrega' ? 'selected' : ''}>Contra entrega</option>
+                </select>
+            </label>
+            ${(order.items || []).map(item => `
+                <div class="qty-row">
+                    <span>${safe(item.name)} · ${money(item.unitPrice)}</span>
+                    <input name="qty-${item.productId}" type="number" min="0" max="100" value="${item.quantity}" ${canChangeStock ? '' : 'disabled'}>
+                </div>
+            `).join('')}
+            <p class="muted">Cantidad 0 quita ese reloj del pedido.</p>
+            <p id="editOrderMsg"></p>
+            <span class="order-actions">
+                ${canChangeStock ? '<button class="primary" type="submit">Guardar cambios</button>' : ''}
+                <button type="button" id="closeOrderEditor">Cerrar</button>
+            </span>
+        </form>
+    `;
+
+    $('#closeOrderEditor').onclick = () => {
+        editingOrderId = null;
+        editor.innerHTML = '';
+    };
+
+    const form = $('#editOrderForm');
+    form.onsubmit = async event => {
+        event.preventDefault();
+        const message = $('#editOrderMsg');
+        const data = new FormData(form);
+        const items = (order.items || []).map(item => ({
+            productId: item.productId,
+            quantity: Number(data.get('qty-' + item.productId) || 0)
+        })).filter(item => item.quantity > 0);
+
+        if (!items.length) {
+            message.textContent = 'Deja al menos un reloj, o elimina el pedido completo.';
+            return;
+        }
+
+        message.textContent = 'Guardando y avisando a Kafka...';
+
+        try {
+            await put('/api/orders/orders/' + order.id, {
+                customer: data.get('customer'),
+                phone: data.get('phone'),
+                address: data.get('address'),
+                paymentMethod: data.get('paymentMethod'),
+                items
+            });
+            editingOrderId = null;
+            editor.innerHTML = '<p class="success">Pedido actualizado. Kafka está ajustando el inventario.</p>';
+            await refreshAdmin();
+        } catch (error) {
+            message.textContent = error.message || 'No se pudo guardar el pedido.';
+        }
+    };
+}
+
+async function deleteOrder(id) {
+    const order = latestOrders.find(item => item.id === id);
+    const changesStock = order && (
+        order.status === 'pending-stock' ||
+        order.status === 'awaiting-payment' ||
+        order.status === 'paid'
+    );
+    const confirmed = confirm(
+        changesStock
+            ? 'Se eliminará el pedido y Kafka devolverá las unidades al inventario.'
+            : 'Se eliminará el pedido. El inventario no cambia porque ya estaba cerrado.'
+    );
+
+    if (!confirmed) return;
+
+    try {
+        await remove('/api/orders/orders/' + id);
+        if (editingOrderId === id) {
+            editingOrderId = null;
+            const editor = $('#orderEditor');
+            if (editor) editor.innerHTML = '';
+        }
+        await refreshAdmin();
+    } catch (error) {
+        alert(error.message || 'No se pudo eliminar el pedido.');
+    }
+}
+
 async function refreshAdmin() {
     await load();
 
@@ -559,25 +892,8 @@ async function refreshAdmin() {
             api('/api/inventory/movements')
         ]);
 
-        // Últimos 12 pedidos
-        $('#adminOrders').innerHTML = orders
-            .slice(0, 12)
-            .map(o => `
-                <div class="admin-row">
-                    <span>
-                        ${safe(o.customer)}
-
-                        <br>
-
-                        <small>
-                            ${safe(statuses[o.status] || o.status)}
-                        </small>
-                    </span>
-
-                    <b>${money(o.total)}</b>
-                </div>
-            `)
-            .join('') || 'Sin pedidos';
+        renderReservations(reservationsFromOrders(orders));
+        renderAdminOrders(orders);
 
         // Últimos 10 movimientos de inventario
         $('#adminMovements').innerHTML = moves

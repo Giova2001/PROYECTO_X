@@ -39,21 +39,31 @@ using Shared;
 // Crea el constructor de la aplicación ASP.NET Core.
 var builder = WebApplication.CreateBuilder(args);
 
-// Registra el contexto contra el Postgres de Supabase.
-// Cada servicio usa su propio esquema dentro del mismo proyecto.
-var supabaseDb = builder.Configuration.GetConnectionString("Db");
-if (string.IsNullOrWhiteSpace(supabaseDb))
+// SQLite conserva los datos de la demostración local.
+// Postgres se usa cuando la cadena es de Supabase.
+var shopDb = builder.Configuration.GetConnectionString("Db");
+if (string.IsNullOrWhiteSpace(shopDb))
 {
     throw new InvalidOperationException(
-        "Falta ConnectionStrings:Db con la cadena de Postgres de Supabase."
+        "Falta ConnectionStrings:Db."
     );
 }
 
+var inventoryUsesSqlite = ShopDatabase.IsSqlite(shopDb);
+
 builder.Services.AddDbContext<InventoryDb>(options =>
-    options.UseNpgsql(supabaseDb, npgsql =>
-        npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "inventory")
-    )
-);
+{
+    if (inventoryUsesSqlite)
+    {
+        options.UseSqlite(shopDb);
+    }
+    else
+    {
+        options.UseNpgsql(shopDb, npgsql =>
+            npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "inventory")
+        );
+    }
+});
 
 // Registra el servicio que escucha eventos de Kafka.
 builder.Services.AddHostedService<InventoryWorker>();
@@ -86,9 +96,16 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider
         .GetRequiredService<InventoryDb>();
 
-    // El historial de migraciones vive en este esquema, así que debe existir antes.
-    db.Database.ExecuteSqlRaw("CREATE SCHEMA IF NOT EXISTS inventory;");
-    db.Database.Migrate();
+    if (inventoryUsesSqlite)
+    {
+        db.Database.EnsureCreated();
+    }
+    else
+    {
+        // El historial de migraciones vive en este esquema, así que debe existir antes.
+        db.Database.ExecuteSqlRaw("CREATE SCHEMA IF NOT EXISTS inventory;");
+        db.Database.Migrate();
+    }
 
     // Inserta productos de ejemplo únicamente cuando
     // la tabla de productos está vacía.
@@ -381,6 +398,16 @@ app.MapGet("/movements", async (InventoryDb db) =>
         .ToListAsync()
 );
 
+// Reservas creadas por Kafka al recibir OrderPlaced.
+// reserved: todavía apartada. sold: el pago la convirtió en venta.
+// released: el pedido se canceló o el pago se rechazó.
+app.MapGet("/reservations", async (InventoryDb db) =>
+    await db.Reservations
+        .OrderByDescending(reservation => reservation.Id)
+        .Take(30)
+        .ToListAsync()
+);
+
 
 // ------------------------------------------------------------
 // 6.2. AJUSTAR EXISTENCIAS
@@ -615,7 +642,10 @@ public class InventoryDb(
     /// </summary>
     protected override void OnModelCreating(ModelBuilder builder)
     {
-        builder.HasDefaultSchema("inventory");
+        if (!Database.IsSqlite())
+        {
+            builder.HasDefaultSchema("inventory");
+        }
 
         builder.Entity<Product>()
             .Property(p => p.Price)
@@ -882,6 +912,41 @@ public class InventoryWorker(
 
 
                     // ----------------------------------------
+                    // 11.5B. EDICIÓN O ELIMINACIÓN DEL PEDIDO
+                    // ----------------------------------------
+
+                    if (ev.Type is "OrderRevised" or "OrderRemoved")
+                    {
+                        if (ev.Type == "OrderRevised")
+                        {
+                            var revised = Events.Parse<OrderRevised>(ev.Data);
+                            await AdjustOrderStock(
+                                db,
+                                revised.OrderId,
+                                revised.PreviousStatus,
+                                revised.PreviousItems,
+                                revised.Items,
+                                logger,
+                                stoppingToken
+                            );
+                        }
+                        else
+                        {
+                            var removed = Events.Parse<OrderRemoved>(ev.Data);
+                            await AdjustOrderStock(
+                                db,
+                                removed.OrderId,
+                                removed.PreviousStatus,
+                                removed.Items,
+                                new List<OrderLine>(),
+                                logger,
+                                stoppingToken
+                            );
+                        }
+                    }
+
+
+                    // ----------------------------------------
                     // 11.6. REGISTRAR EVENTO PROCESADO
                     // ----------------------------------------
 
@@ -937,6 +1002,170 @@ public class InventoryWorker(
                     2500,
                     stoppingToken
                 );
+            }
+        }
+    }
+
+    /// <summary>
+    /// Aplica la diferencia de cantidades de un pedido.
+    /// Si estaba reservado, mueve Reserved. Si ya estaba pagado, mueve Stock.
+    /// No lanza errores: un fallo aquí detendría el consumidor de Kafka.
+    /// </summary>
+    static async Task AdjustOrderStock(
+        InventoryDb db,
+        Guid orderId,
+        string previousStatus,
+        List<OrderLine> previousItems,
+        List<OrderLine> nextItems,
+        ILogger logger,
+        CancellationToken ct
+    )
+    {
+        var holdsReservation = previousStatus is
+            "pending-stock" or "awaiting-payment";
+        var sold = previousStatus == "paid";
+
+        if (!holdsReservation && !sold)
+        {
+            return;
+        }
+
+        var before = previousItems
+            .GroupBy(item => item.ProductId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Sum(item => item.Quantity)
+            );
+        var after = nextItems
+            .GroupBy(item => item.ProductId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Sum(item => item.Quantity)
+            );
+
+        foreach (var productId in before.Keys.Union(after.Keys))
+        {
+            var oldQuantity = before.GetValueOrDefault(productId);
+            var newQuantity = after.GetValueOrDefault(productId);
+            var delta = newQuantity - oldQuantity;
+
+            if (delta == 0)
+            {
+                continue;
+            }
+
+            var product = await db.Products.FindAsync(
+                new object[] { productId },
+                ct
+            );
+
+            if (product is null)
+            {
+                continue;
+            }
+
+            if (holdsReservation)
+            {
+                var reservation = await db.Reservations
+                    .FirstOrDefaultAsync(
+                        row =>
+                            row.OrderId == orderId &&
+                            row.ProductId == productId &&
+                            row.Status == "reserved",
+                        ct
+                    );
+
+                if (reservation is null && oldQuantity > 0)
+                {
+                    // La reserva original no está activa. No se toca el contador.
+                    continue;
+                }
+
+                if (delta > 0 && product.Stock - product.Reserved < delta)
+                {
+                    logger.LogWarning(
+                        "Kafka no amplió la reserva del pedido {OrderId}: sin stock de {Product}",
+                        orderId,
+                        product.Name
+                    );
+                    continue;
+                }
+
+                product.Reserved = Math.Max(0, product.Reserved + delta);
+
+                if (newQuantity <= 0)
+                {
+                    if (reservation is not null)
+                    {
+                        reservation.Status = "released";
+                    }
+                }
+                else if (reservation is null)
+                {
+                    db.Reservations.Add(new Reservation
+                    {
+                        OrderId = orderId,
+                        ProductId = productId,
+                        Quantity = newQuantity,
+                        Status = "reserved"
+                    });
+                }
+                else
+                {
+                    reservation.Quantity = newQuantity;
+                }
+            }
+            else
+            {
+                var reservation = await db.Reservations
+                    .Where(row =>
+                        row.OrderId == orderId &&
+                        row.ProductId == productId &&
+                        row.Status == "sold"
+                    )
+                    .OrderByDescending(row => row.Id)
+                    .FirstOrDefaultAsync(ct);
+
+                // Una segunda eliminación no vuelve a sumar stock.
+                if (reservation is null && newQuantity == 0)
+                {
+                    continue;
+                }
+
+                if (delta > 0 && product.Stock - product.Reserved < delta)
+                {
+                    logger.LogWarning(
+                        "Kafka no descontó más stock del pedido {OrderId}: sin existencias de {Product}",
+                        orderId,
+                        product.Name
+                    );
+                    continue;
+                }
+
+                product.Stock = Math.Max(0, product.Stock - delta);
+
+                db.Movements.Add(new StockMovement
+                {
+                    ProductId = productId,
+                    Change = -delta,
+                    Reason = delta > 0
+                        ? $"Ajuste pedido {orderId}"
+                        : $"Devolución pedido {orderId}"
+                });
+
+                if (reservation is null)
+                {
+                    continue;
+                }
+
+                if (newQuantity <= 0)
+                {
+                    reservation.Status = "released";
+                }
+                else
+                {
+                    reservation.Quantity = newQuantity;
+                }
             }
         }
     }

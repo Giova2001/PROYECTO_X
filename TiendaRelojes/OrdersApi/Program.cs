@@ -49,20 +49,31 @@ var builder = WebApplication.CreateBuilder(args);
 // 2.1. CONFIGURACIÓN DE LA BASE DE DATOS
 // ------------------------------------------------------------
 
-// Registra OrdersDb contra el esquema orders de Supabase.
-var supabaseDb = builder.Configuration.GetConnectionString("Db");
-if (string.IsNullOrWhiteSpace(supabaseDb))
+// SQLite conserva los pedidos de la demostración local.
+// Postgres se usa cuando la cadena es de Supabase.
+var shopDb = builder.Configuration.GetConnectionString("Db");
+if (string.IsNullOrWhiteSpace(shopDb))
 {
     throw new InvalidOperationException(
-        "Falta ConnectionStrings:Db con la cadena de Postgres de Supabase."
+        "Falta ConnectionStrings:Db."
     );
 }
 
+var ordersUseSqlite = ShopDatabase.IsSqlite(shopDb);
+
 builder.Services.AddDbContext<OrdersDb>(options =>
-    options.UseNpgsql(supabaseDb, npgsql =>
-        npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "orders")
-    )
-);
+{
+    if (ordersUseSqlite)
+    {
+        options.UseSqlite(shopDb);
+    }
+    else
+    {
+        options.UseNpgsql(shopDb, npgsql =>
+            npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "orders")
+        );
+    }
+});
 
 
 // ------------------------------------------------------------
@@ -112,9 +123,16 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider
         .GetRequiredService<OrdersDb>();
 
-    // El historial de migraciones vive en este esquema, así que debe existir antes.
-    db.Database.ExecuteSqlRaw("CREATE SCHEMA IF NOT EXISTS orders;");
-    db.Database.Migrate();
+    if (ordersUseSqlite)
+    {
+        db.Database.EnsureCreated();
+    }
+    else
+    {
+        // El historial de migraciones vive en este esquema, así que debe existir antes.
+        db.Database.ExecuteSqlRaw("CREATE SCHEMA IF NOT EXISTS orders;");
+        db.Database.Migrate();
+    }
 }
 
 
@@ -494,6 +512,268 @@ app.MapPost(
 
 
 // ============================================================
+// 7B. EDICIÓN Y ELIMINACIÓN DE PEDIDOS
+// ============================================================
+
+/*
+   PUT /orders/{id}
+
+   Cambia los datos del cliente y las cantidades.
+   Si las cantidades cambian, publica OrderRevised para que
+   inventario ajuste la reserva o el stock por Kafka.
+*/
+
+app.MapPut(
+    "/orders/{id:guid}",
+    async (
+        Guid id,
+        CreateOrder request,
+        OrdersDb db,
+        IHttpClientFactory http,
+        IConfiguration config
+    ) =>
+    {
+        var order = await db.Orders
+            .Include(item => item.Items)
+            .FirstOrDefaultAsync(item => item.Id == id);
+
+        if (order is null)
+        {
+            return Results.NotFound();
+        }
+
+        if (
+            order.Status is not (
+                "awaiting-payment" or "paid"
+            )
+        )
+        {
+            return Results.BadRequest(
+                "Solo se editan pedidos reservados o ya pagados. " +
+                "Si Kafka todavía está verificando el stock, espera un momento."
+            );
+        }
+
+        if (
+            string.IsNullOrWhiteSpace(request.Customer) ||
+            string.IsNullOrWhiteSpace(request.Phone) ||
+            string.IsNullOrWhiteSpace(request.Address) ||
+            request.Items is null ||
+            request.Items.Count == 0 ||
+            request.Items.Count > 30
+        )
+        {
+            return Results.BadRequest(
+                "Datos de pedido incompletos"
+            );
+        }
+
+        var client = http.CreateClient();
+        var baseUrl = config["INVENTORY_URL"]
+            ?? "http://localhost:5101";
+        var products = await client.GetFromJsonAsync<
+            List<CatalogProduct>
+        >(baseUrl + "/products") ?? new();
+
+        var lines = new List<OrderItem>();
+        var groupedItems = request.Items
+            .Where(item => item.Quantity > 0)
+            .GroupBy(item => item.ProductId)
+            .Select(group => new OrderInput(
+                group.Key,
+                group.Sum(item => item.Quantity)
+            ))
+            .ToList();
+
+        if (groupedItems.Count == 0)
+        {
+            return Results.BadRequest(
+                "El pedido necesita al menos un reloj"
+            );
+        }
+
+        foreach (var input in groupedItems)
+        {
+            var product = products.FirstOrDefault(
+                item => item.Id == input.ProductId
+            );
+
+            if (
+                product is null ||
+                input.Quantity > 100
+            )
+            {
+                return Results.BadRequest(
+                    "Producto o cantidad inválida"
+                );
+            }
+
+            var alreadyHeld = order.Status == "awaiting-payment"
+                ? order.Items
+                    .Where(item => item.ProductId == product.Id)
+                    .Sum(item => item.Quantity)
+                : 0;
+
+            var available = product.Stock - product.Reserved + alreadyHeld;
+
+            if (input.Quantity > available)
+            {
+                return Results.BadRequest(
+                    $"No hay existencias suficientes de {product.Name}"
+                );
+            }
+
+            lines.Add(new OrderItem
+            {
+                ProductId = product.Id,
+                Name = product.Name,
+                Quantity = input.Quantity,
+                UnitPrice = product.Price
+            });
+        }
+
+        var previousItems = order.Items
+            .Select(item => new OrderLine(
+                item.ProductId,
+                item.Quantity,
+                item.UnitPrice
+            ))
+            .ToList();
+        var previousStatus = order.Status;
+
+        order.Customer = request.Customer.Trim();
+        order.Phone = request.Phone.Trim();
+        order.Address = request.Address.Trim();
+        order.PaymentMethod =
+            request.PaymentMethod == "contra-entrega"
+                ? "contra-entrega"
+                : "transferencia";
+
+        db.RemoveRange(order.Items.ToList());
+        order.Items.Clear();
+
+        foreach (var line in lines)
+        {
+            order.Items.Add(line);
+        }
+
+        order.Total = lines.Sum(
+            item => item.UnitPrice * item.Quantity
+        );
+
+        await db.SaveChangesAsync();
+
+        var nextItems = lines
+            .Select(item => new OrderLine(
+                item.ProductId,
+                item.Quantity,
+                item.UnitPrice
+            ))
+            .ToList();
+
+        if (!SameQuantities(previousItems, nextItems))
+        {
+            await Events.Publish(
+                config,
+                "OrderRevised",
+                new OrderRevised(
+                    order.Id,
+                    previousStatus,
+                    previousItems,
+                    nextItems
+                )
+            );
+        }
+
+        return Results.Ok(order);
+    }
+);
+
+/*
+   DELETE /orders/{id}
+
+   Elimina el pedido y publica OrderRemoved.
+   Inventario libera la reserva o devuelve las unidades vendidas.
+*/
+
+app.MapDelete(
+    "/orders/{id:guid}",
+    async (
+        Guid id,
+        OrdersDb db,
+        IConfiguration config
+    ) =>
+    {
+        var order = await db.Orders
+            .Include(item => item.Items)
+            .FirstOrDefaultAsync(item => item.Id == id);
+
+        if (order is null)
+        {
+            return Results.NotFound();
+        }
+
+        var previousStatus = order.Status;
+        var items = order.Items
+            .Select(item => new OrderLine(
+                item.ProductId,
+                item.Quantity,
+                item.UnitPrice
+            ))
+            .ToList();
+
+        if (
+            previousStatus is
+                "pending-stock" or
+                "awaiting-payment" or
+                "paid"
+        )
+        {
+            await Events.Publish(
+                config,
+                "OrderRemoved",
+                new OrderRemoved(
+                    order.Id,
+                    previousStatus,
+                    items
+                )
+            );
+        }
+
+        db.Orders.Remove(order);
+        await db.SaveChangesAsync();
+
+        return Results.NoContent();
+    }
+);
+
+static bool SameQuantities(
+    List<OrderLine> previous,
+    List<OrderLine> next
+)
+{
+    var before = previous
+        .GroupBy(item => item.ProductId)
+        .ToDictionary(
+            group => group.Key,
+            group => group.Sum(item => item.Quantity)
+        );
+    var after = next
+        .GroupBy(item => item.ProductId)
+        .ToDictionary(
+            group => group.Key,
+            group => group.Sum(item => item.Quantity)
+        );
+
+    return before.Count == after.Count &&
+        before.All(pair =>
+            after.TryGetValue(pair.Key, out var quantity) &&
+            quantity == pair.Value
+        );
+}
+
+
+// ============================================================
 // 8. INICIALIZACIÓN DEL SERVIDOR
 // ============================================================
 
@@ -664,7 +944,10 @@ public class OrdersDb(
         ModelBuilder builder
     )
     {
-        builder.HasDefaultSchema("orders");
+        if (!Database.IsSqlite())
+        {
+            builder.HasDefaultSchema("orders");
+        }
 
         builder.Entity<ShopOrder>()
             .Property(o => o.Total)
