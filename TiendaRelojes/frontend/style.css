@@ -179,10 +179,7 @@ nav {
 }
 
 .shop {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 320px;
-    gap: 28px;
-    align-items: start;
+    display: block;
 }
 
 .products {
@@ -197,12 +194,39 @@ nav {
 }
 
 .basket {
-    position: sticky;
-    top: 84px;
-    border: 1px solid #e4e0db;
-    border-radius: 8px;
     background: #faf8f6;
     padding: 18px;
+}
+
+/* La cesta se despliega desde la derecha como un panel lateral. */
+dialog.drawer {
+    margin: 0 0 0 auto;
+    width: min(100vw, 420px);
+    height: 100vh;
+    max-height: 100vh;
+    border-radius: 0;
+    padding: 30px 24px;
+    overflow-y: auto;
+}
+
+dialog.drawer[open] {
+    animation: drawer-in .25s ease-out;
+}
+
+@keyframes drawer-in {
+    from {
+        transform: translateX(100%);
+    }
+}
+
+.cart-link span.bump {
+    animation: cart-bump .4s ease-out;
+}
+
+@keyframes cart-bump {
+    50% {
+        transform: scale(1.5);
+    }
 }
 
 .basket h2 {
@@ -593,6 +617,89 @@ textarea {
     animation: order-spin .7s linear infinite;
 }
 
+/* =========================================================
+   SESIÓN, CESTA Y MÉTODOS DE PAGO
+   ========================================================= */
+[hidden] {
+    display: none !important;
+}
+
+.user-box {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: #cba68b;
+}
+
+.auth-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.auth-tabs .tab.active {
+    background: #1c1c1c;
+    color: white;
+    border-color: #1c1c1c;
+}
+
+.auth-form {
+    max-width: 420px;
+}
+
+#authDialog {
+    width: min(95vw, 480px);
+}
+
+.qty-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.qty-control b {
+    min-width: 1.6em;
+    text-align: center;
+}
+
+.cart-row small {
+    display: block;
+    color: #777;
+}
+
+.pay-box {
+    border: 1px solid #e4e0db;
+    border-radius: 6px;
+    padding: 4px 12px;
+    margin: 10px 0;
+    background: white;
+    font-size: 13px;
+}
+
+.pay-box legend {
+    font-size: 13px;
+    padding: 0 4px;
+}
+
+.pay-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+input:user-invalid,
+textarea:user-invalid {
+    border-color: #b12c2c;
+}
+
+.role-select {
+    width: auto;
+    display: inline-block;
+    margin: 0;
+    padding: 6px;
+}
+
 @keyframes order-spin {
     to {
         transform: rotate(360deg);
@@ -608,6 +715,20 @@ textarea {
         display: none;
     }
 
+    .nav-actions {
+        gap: 6px;
+    }
+
+    .nav-actions button,
+    .cart-link {
+        padding: 7px 9px;
+        font-size: 12px;
+    }
+
+    #userName {
+        display: none;
+    }
+
     .hero {
         grid-template-columns: 1fr;
         text-align: center;
@@ -620,10 +741,6 @@ textarea {
     .shop,
     .products {
         grid-template-columns: 1fr;
-    }
-
-    .basket {
-        position: static;
     }
 
     .section-title {

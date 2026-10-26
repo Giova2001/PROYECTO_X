@@ -16,6 +16,16 @@ Ejecutar `docker compose up --build -d`; comprobar `docker compose ps` y `docker
 | P08 | Ajustar stock desde administración | Cantidad cambia y se registra movimiento |
 | P09 | Registrar un reloj | Nuevo reloj aparece en catálogo |
 | P10 | Reiniciar contenedores sin -v | Los datos permanecen |
+| P11 | Crear pedido sin sesión | Se abre «Iniciar sesión»; la cesta se conserva |
+| P12 | Registrar cuenta con contraseña «corta» o correo repetido | 400 / 409 con mensaje claro |
+| P13 | Cliente abre `/api/inventory/movements` o `/api/orders/orders` | 403 |
+| P14 | Cliente consulta el pedido de otro cliente | 403 |
+| P15 | Botón «Administración» con cliente | No aparece; solo con rol admin |
+| P16 | Degradar al único admin | 400 «La tienda necesita al menos un administrador» |
+| P17 | Tarjeta con número inválido, vencida o CVV corto | El formulario lo marca y OrdersApi responde 400 |
+| P18 | Pagar con tarjeta válida | Se guarda solo «Visa •••• 4242» |
+| P19 | Teléfono `12345678` o dirección corta | Mensaje de validación, el pedido no se envía |
+| P20 | Recargar la página con productos en la cesta | La cesta sigue igual; `−`/`+` respetan el stock |
 
 ## Resultados observados
 En una ejecución con `docker compose up --build -d`:
@@ -30,3 +40,6 @@ La interfaz en http://localhost:8088 recorre el mismo flujo: carrito, «Crear pe
 
 ## Observaciones
 Los demás casos siguen siendo un plan manual. Probar también mensajes duplicados, reinicios a mitad del flujo y cancelaciones: estas situaciones requieren mejoras antes de un uso real.
+
+## Resultados de login, roles y cesta
+Probado con las APIs en local (SQLite) y el frontend en Chrome: P11 a P20 se comportan como se indica. También se verificó que una base de pedidos creada con la versión anterior se actualiza sola al arrancar (columnas nuevas) y que sus pedidos siguen visibles para el administrador. El flujo completo con Kafka (reserva y pago) debe repetirse con `docker compose up --build -d`.

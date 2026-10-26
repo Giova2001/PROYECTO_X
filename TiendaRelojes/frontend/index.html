@@ -20,8 +20,16 @@
         <nav>
             <a href="#catalogo">Tienda</a><a href="#nosotros">Acerca de</a><a href="#envios">Envíos</a><a
                 href="#contacto">Contacto</a></nav>
-        <div class="nav-actions"><button id="adminBtn" class="light">Administración</button><a id="cartBtn"
-                class="cart-link" href="#cesta">Cesta <span id="cartCount">0</span></a></div>
+        <div class="nav-actions">
+            <button id="adminBtn" class="light" hidden>Administración</button>
+            <button id="ordersBtn" hidden>Mis pedidos</button>
+            <button id="loginBtn">Iniciar sesión</button>
+            <span id="userBox" class="user-box" hidden>
+                <span id="userName"></span>
+                <button id="logoutBtn" class="smallbtn">Salir</button>
+            </span>
+            <button id="cartBtn" class="cart-link" type="button" aria-controls="cesta">Cesta <span id="cartCount">0</span></button>
+        </div>
     </header>
     <main>
         <section id="inicio" class="hero">
@@ -44,24 +52,60 @@
             </div>
             <div class="shop">
                 <div id="products" class="products"></div>
-                <aside id="cesta" class="basket">
+                <!-- La cesta es un panel lateral que se abre con el botón «Cesta» de la cabecera. -->
+                <dialog id="cesta" class="basket drawer" aria-label="Tu cesta">
+                    <button class="close" data-close="cesta" type="button" aria-label="Cerrar la cesta">×</button>
                     <h2>Tu cesta</h2>
                     <p id="cartNotice" class="notice">Pulsa «Añadir a la cesta». El reloj sigue en el catálogo y puedes elegir el mismo otra vez.</p>
                     <div id="cartLines">Tu cesta está vacía.</div>
                     <p class="total">Total: <strong id="cartTotal">$0.00</strong></p>
+                    <button id="clearCart" class="smallbtn" type="button" hidden>Vaciar cesta</button>
                     <form id="checkout">
                         <h3>Datos de entrega</h3>
-                        <label>Nombre completo<input name="customer" required maxlength="100"></label>
-                        <label>Teléfono<input name="phone" required maxlength="30"></label>
-                        <label>Dirección de entrega<textarea name="address" required maxlength="300"></textarea></label>
-                        <label>Método de pago<select name="paymentMethod">
-                                <option value="transferencia">Transferencia (simulada)</option>
+                        <p id="loginHint" class="notice">Inicia sesión para crear el pedido. La cesta se conserva.</p>
+                        <label>Nombre completo<input name="customer" required minlength="3" maxlength="100"
+                                pattern="[A-Za-zÁÉÍÓÚÜÑáéíóúüñ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ .'\-]{2,99}"
+                                title="Solo letras, entre 3 y 100 caracteres" autocomplete="name"></label>
+                        <label>Teléfono<input name="phone" required maxlength="16" inputmode="tel"
+                                pattern="(\+503[\s\-]?)?[267]\d{3}[\s\-]?\d{4}"
+                                title="8 dígitos que empiezan por 2, 6 o 7. Ejemplo: 7000-0000"
+                                placeholder="7000-0000" autocomplete="tel"></label>
+                        <label>Dirección de entrega<textarea name="address" required minlength="10" maxlength="300"
+                                title="Entre 10 y 300 caracteres" autocomplete="street-address"></textarea></label>
+                        <label>Método de pago<select name="paymentMethod" id="paymentMethod">
+                                <option value="tarjeta">Tarjeta de crédito o débito (simulada)</option>
+                                <option value="transferencia" selected>Transferencia (simulada)</option>
                                 <option value="contra-entrega">Contra entrega (simulado)</option>
                             </select></label>
+                        <fieldset id="cardFields" class="pay-box" disabled hidden>
+                            <legend>Datos de la tarjeta <span id="cardBrand" class="muted"></span></legend>
+                            <label>Titular<input name="cardHolder" required maxlength="60" autocomplete="cc-name"
+                                    pattern="[A-Za-zÁÉÍÓÚÜÑáéíóúüñ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ .'\-]{2,59}"
+                                    title="Nombre como aparece en la tarjeta"></label>
+                            <label>Número<input name="cardNumber" required inputmode="numeric" maxlength="23"
+                                    autocomplete="cc-number" placeholder="4242 4242 4242 4242"></label>
+                            <div class="pay-row">
+                                <label>Vence<input name="cardExpiry" required maxlength="5" inputmode="numeric"
+                                        placeholder="MM/AA" autocomplete="cc-exp" pattern="(0[1-9]|1[0-2])/\d{2}"
+                                        title="Formato MM/AA"></label>
+                                <label>CVV<input name="cardCvv" required maxlength="4" inputmode="numeric"
+                                        autocomplete="cc-csc" pattern="\d{3,4}" title="3 dígitos (4 en Amex)"></label>
+                            </div>
+                            <p class="muted">Simulado: no se cobra nada. Solo se guardan la marca y los últimos 4 dígitos.</p>
+                        </fieldset>
+                        <div id="transferInfo" class="pay-box">
+                            <p><b>Transferencia simulada</b></p>
+                            <p class="muted">Banco Demo · Cuenta 000-123456-7 · A nombre de Tiempo & Estilo.
+                                Usa el número de pedido como referencia.</p>
+                        </div>
+                        <div id="codInfo" class="pay-box" hidden>
+                            <p><b>Contra entrega</b></p>
+                            <p class="muted">Pagas al recibir el reloj. Ten el monto exacto, por favor.</p>
+                        </div>
                         <button id="placeOrder" class="primary" type="button">Crear pedido</button>
                     </form>
                     <p id="checkoutMsg" role="status"></p>
-                </aside>
+                </dialog>
             </div>
         </section>
 
@@ -193,9 +237,35 @@
         <div id="orderStatus"></div><button id="approvePayment" class="primary">Simular pago aprobado</button> <button
             id="rejectPayment">Simular pago rechazado</button>
     </dialog>
+    <dialog id="authDialog"><button class="close" data-close="authDialog">×</button>
+        <div class="auth-tabs">
+            <button type="button" class="tab active" data-tab="login">Iniciar sesión</button>
+            <button type="button" class="tab" data-tab="register">Crear cuenta</button>
+        </div>
+        <p id="authReason" class="notice"></p>
+        <form id="loginForm" class="auth-form">
+            <label>Correo electrónico<input name="email" type="email" required maxlength="150" autocomplete="email"></label>
+            <label>Contraseña<input name="password" type="password" required autocomplete="current-password"></label>
+            <button class="primary" type="submit">Entrar</button>
+        </form>
+        <form id="registerForm" class="auth-form" hidden>
+            <label>Nombre completo<input name="name" required minlength="3" maxlength="100" autocomplete="name"></label>
+            <label>Correo electrónico<input name="email" type="email" required maxlength="150" autocomplete="email"></label>
+            <label>Contraseña<input name="password" type="password" required minlength="8" maxlength="100"
+                    pattern="(?=.*[A-Za-z])(?=.*\d).{8,100}" title="Mínimo 8 caracteres, con letras y números"
+                    autocomplete="new-password"></label>
+            <label>Repite la contraseña<input name="confirm" type="password" required autocomplete="new-password"></label>
+            <button class="primary" type="submit">Crear cuenta</button>
+        </form>
+        <p id="authMsg" role="status"></p>
+    </dialog>
+    <dialog id="myOrdersDialog"><button class="close" data-close="myOrdersDialog">×</button>
+        <h2>Mis pedidos</h2>
+        <div id="myOrders">Cargando...</div>
+    </dialog>
     <dialog id="adminDialog"><button class="close" data-close="adminDialog">×</button>
         <h2>Panel administrativo (demostración)</h2>
-        <p class="warning">Sin autenticación: úsalo únicamente en un entorno local de pruebas.</p>
+        <p class="warning">Solo para el rol administrador. Úsalo únicamente en un entorno local de pruebas.</p>
         <div class="admin-grid">
             <section>
                 <h3>Productos e inventario</h3>
@@ -217,9 +287,14 @@
                 <div id="adminMovements"></div>
             </section>
         </div>
+        <section>
+            <h3>Usuarios y roles</h3>
+            <p class="muted">El cambio de rol se aplica cuando el usuario vuelve a iniciar sesión.</p>
+            <div id="adminUsers"></div>
+        </section>
     </dialog>
     <footer>© 2026 Tiempo & Estilo · Todos los derechos reservados · Pagos simulados</footer>
-    <script src="/app.js?v=8"></script>
+    <script src="/app.js?v=10"></script>
 </body>
 
 </html>

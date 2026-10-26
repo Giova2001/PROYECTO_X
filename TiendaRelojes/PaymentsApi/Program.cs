@@ -36,8 +36,14 @@ builder.Services.AddCors(options =>
     )
 );
 
+// Token de AuthApi: listar pagos es de administradores;
+// simular un pago exige sesión y ser dueño del pedido.
+builder.Services.AddShopAuth(builder.Configuration);
+
 var app = builder.Build();
 app.UseCors();
+app.UseAuthentication();
+app.UseAuthorization();
 
 // Crear el esquema payments y sus tablas en Supabase si faltan.
 using (var scope = app.Services.CreateScope())
@@ -64,7 +70,7 @@ app.MapGet("/payments", async (PaymentsDb db) =>
     await db.Payments
         .OrderByDescending(p => p.CreatedAt)
         .ToListAsync()
-);
+).RequireAuthorization(Policies.Admin);
 
 // Consultar pago mediante ID del pedido.
 app.MapGet("/payments/{id:guid}", async (
@@ -75,7 +81,7 @@ app.MapGet("/payments/{id:guid}", async (
         .FirstOrDefaultAsync(p => p.OrderId == id) is { } payment
             ? Results.Ok(payment)
             : Results.NotFound()
-);
+).RequireAuthorization(Policies.Admin);
 
 
 // =====================================================
@@ -87,6 +93,7 @@ app.MapGet("/payments/{id:guid}", async (
 app.MapPost("/payments/{id:guid}/simulate", async (
     Guid id,
     SimulateRequest request,
+    HttpContext http,
     PaymentsDb db,
     IConfiguration config,
     IHttpClientFactory factory
@@ -96,14 +103,30 @@ app.MapPost("/payments/{id:guid}/simulate", async (
     if (request.Result is not ("approved" or "rejected"))
         return Results.BadRequest("Resultado no válido");
 
-    // Consultar el pedido en Orders Service.
+    // Consultar el pedido en Orders Service con el mismo token.
+    // Orders responde 403/404 si el pedido no es de este usuario.
     var ordersUrl = config["ORDERS_URL"]
         ?? "http://localhost:5102";
 
-    var order = await factory.CreateClient()
-        .GetFromJsonAsync<OrderSnapshot>(
-            $"{ordersUrl}/orders/{id}"
-        );
+    using var lookup = new HttpRequestMessage(
+        HttpMethod.Get,
+        $"{ordersUrl}/orders/{id}"
+    );
+    lookup.Headers.TryAddWithoutValidation(
+        "Authorization",
+        http.Request.Headers.Authorization.ToString()
+    );
+
+    using var response = await factory.CreateClient().SendAsync(lookup);
+
+    if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
+        return Results.Forbid();
+
+    if (!response.IsSuccessStatusCode)
+        return Results.NotFound("Pedido no encontrado");
+
+    var order = await response.Content
+        .ReadFromJsonAsync<OrderSnapshot>();
 
     // El pedido debe tener inventario reservado.
     if (order is null || order.Status != "awaiting-payment")
@@ -144,7 +167,7 @@ app.MapPost("/payments/{id:guid}/simulate", async (
     );
 
     return Results.Ok(payment);
-});
+}).RequireAuthorization(Policies.Cliente);
 
 
 // =====================================================
