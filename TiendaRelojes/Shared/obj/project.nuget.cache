@@ -1,14 +1,11 @@
 {
   "version": 2,
-  "dgSpecHash": "wI957APrg9s=",
+  "dgSpecHash": "WpxpMJfyMWF9Aqi5+Nu7HDLl6r+9M0mTT3X4ne5cQOqzZKx2pJWH9A5RIi8cS3xToUrSVahpz+4PFZverh/RRg==",
   "success": true,
-  "projectFilePath": "C:\\Users\\Chris Garcia\\Desktop\\DRS y APR\\TiendaRelojes\\Shared\\Shared.csproj",
+  "projectFilePath": "/home/wenmejia/Escritorio/PROYECTO_X/TiendaRelojes/Shared/Shared.csproj",
   "expectedPackageFiles": [
-    "C:\\Users\\Chris Garcia\\.nuget\\packages\\confluent.kafka\\2.6.1\\confluent.kafka.2.6.1.nupkg.sha512",
-    "C:\\Users\\Chris Garcia\\.nuget\\packages\\librdkafka.redist\\2.6.1\\librdkafka.redist.2.6.1.nupkg.sha512",
-    "C:\\Users\\Chris Garcia\\.nuget\\packages\\microsoft.netcore.app.ref\\8.0.30\\microsoft.netcore.app.ref.8.0.30.nupkg.sha512",
-    "C:\\Users\\Chris Garcia\\.nuget\\packages\\microsoft.windowsdesktop.app.ref\\8.0.30\\microsoft.windowsdesktop.app.ref.8.0.30.nupkg.sha512",
-    "C:\\Users\\Chris Garcia\\.nuget\\packages\\microsoft.aspnetcore.app.ref\\8.0.30\\microsoft.aspnetcore.app.ref.8.0.30.nupkg.sha512"
+    "/home/wenmejia/.nuget/packages/confluent.kafka/2.6.1/confluent.kafka.2.6.1.nupkg.sha512",
+    "/home/wenmejia/.nuget/packages/librdkafka.redist/2.6.1/librdkafka.redist.2.6.1.nupkg.sha512"
   ],
   "logs": []
 }

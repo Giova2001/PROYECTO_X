@@ -29,6 +29,12 @@
 // 1. IMPORTACIÓN DE DEPENDENCIAS
 // ============================================================
 
+// Usuario autenticado (claims del token JWT).
+using System.Security.Claims;
+
+// Expresiones regulares para validar datos del cliente.
+using System.Text.RegularExpressions;
+
 // Permite trabajar con Entity Framework Core y PostgreSQL (Supabase).
 using Microsoft.EntityFrameworkCore;
 
@@ -49,20 +55,31 @@ var builder = WebApplication.CreateBuilder(args);
 // 2.1. CONFIGURACIÓN DE LA BASE DE DATOS
 // ------------------------------------------------------------
 
-// Registra OrdersDb contra el esquema orders de Supabase.
-var supabaseDb = builder.Configuration.GetConnectionString("Db");
-if (string.IsNullOrWhiteSpace(supabaseDb))
+// SQLite conserva los pedidos de la demostración local.
+// Postgres se usa cuando la cadena es de Supabase.
+var shopDb = builder.Configuration.GetConnectionString("Db");
+if (string.IsNullOrWhiteSpace(shopDb))
 {
     throw new InvalidOperationException(
-        "Falta ConnectionStrings:Db con la cadena de Postgres de Supabase."
+        "Falta ConnectionStrings:Db."
     );
 }
 
+var ordersUseSqlite = ShopDatabase.IsSqlite(shopDb);
+
 builder.Services.AddDbContext<OrdersDb>(options =>
-    options.UseNpgsql(supabaseDb, npgsql =>
-        npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "orders")
-    )
-);
+{
+    if (ordersUseSqlite)
+    {
+        options.UseSqlite(shopDb);
+    }
+    else
+    {
+        options.UseNpgsql(shopDb, npgsql =>
+            npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "orders")
+        );
+    }
+});
 
 
 // ------------------------------------------------------------
@@ -75,6 +92,10 @@ builder.Services.AddHostedService<OrderWorker>();
 // Habilita HttpClient para comunicarse con el
 // microservicio de inventario.
 builder.Services.AddHttpClient();
+
+// Valida el token emitido por AuthApi.
+// Clientes: crean y consultan sus pedidos. Admin: todos los pedidos.
+builder.Services.AddShopAuth(builder.Configuration);
 
 
 // ------------------------------------------------------------
@@ -100,6 +121,8 @@ var app = builder.Build();
 
 // Habilita la política CORS.
 app.UseCors();
+app.UseAuthentication();
+app.UseAuthorization();
 
 
 // ============================================================
@@ -112,9 +135,29 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider
         .GetRequiredService<OrdersDb>();
 
-    // El historial de migraciones vive en este esquema, así que debe existir antes.
-    db.Database.ExecuteSqlRaw("CREATE SCHEMA IF NOT EXISTS orders;");
-    db.Database.Migrate();
+    if (ordersUseSqlite)
+    {
+        db.Database.EnsureCreated();
+
+        // EnsureCreated no modifica una base ya creada:
+        // agrega las columnas de usuario y pago si faltan.
+        var columns = db.Database
+            .SqlQueryRaw<string>("SELECT name AS Value FROM pragma_table_info('Orders')")
+            .ToList();
+
+        if (!columns.Contains("UserId"))
+            db.Database.ExecuteSqlRaw("ALTER TABLE \"Orders\" ADD COLUMN \"UserId\" INTEGER NULL;");
+        if (!columns.Contains("Email"))
+            db.Database.ExecuteSqlRaw("ALTER TABLE \"Orders\" ADD COLUMN \"Email\" TEXT NOT NULL DEFAULT '';");
+        if (!columns.Contains("PaymentDetail"))
+            db.Database.ExecuteSqlRaw("ALTER TABLE \"Orders\" ADD COLUMN \"PaymentDetail\" TEXT NOT NULL DEFAULT '';");
+    }
+    else
+    {
+        // El historial de migraciones vive en este esquema, así que debe existir antes.
+        db.Database.ExecuteSqlRaw("CREATE SCHEMA IF NOT EXISTS orders;");
+        db.Database.Migrate();
+    }
 }
 
 
@@ -164,6 +207,7 @@ app.MapGet("/health", () =>
    - Estado del pedido.
 
    Los pedidos se ordenan desde el más reciente.
+   Solo administradores.
 */
 
 app.MapGet("/orders", async (OrdersDb db) =>
@@ -171,7 +215,29 @@ app.MapGet("/orders", async (OrdersDb db) =>
         .Include(order => order.Items)
         .OrderByDescending(order => order.CreatedAt)
         .ToListAsync()
-);
+).RequireAuthorization(Policies.Admin);
+
+
+// ------------------------------------------------------------
+// 5.1B. PEDIDOS DEL USUARIO CON SESIÓN
+// ------------------------------------------------------------
+
+/*
+   GET /orders/mine
+
+   Devuelve solo los pedidos creados por el usuario del token.
+*/
+
+app.MapGet("/orders/mine", async (ClaimsPrincipal user, OrdersDb db) =>
+{
+    var userId = user.UserId();
+
+    return await db.Orders
+        .Include(order => order.Items)
+        .Where(order => order.UserId == userId)
+        .OrderByDescending(order => order.CreatedAt)
+        .ToListAsync();
+}).RequireAuthorization(Policies.Cliente);
 
 
 // ------------------------------------------------------------
@@ -185,20 +251,28 @@ app.MapGet("/orders", async (OrdersDb db) =>
 
    Respuestas:
    - 200 OK: pedido encontrado.
+   - 403 Forbidden: el pedido es de otro usuario.
    - 404 Not Found: pedido inexistente.
 */
 
 app.MapGet(
     "/orders/{id:guid}",
-    async (Guid id, OrdersDb db) =>
-        await db.Orders
-            .Include(order => order.Items)
-            .FirstOrDefaultAsync(order => order.Id == id)
-            is { } order
+    async (Guid id, ClaimsPrincipal user, OrdersDb db) =>
+    {
+        var order = await db.Orders
+            .Include(item => item.Items)
+            .FirstOrDefaultAsync(item => item.Id == id);
 
+        if (order is null)
+        {
+            return Results.NotFound();
+        }
+
+        return CanSee(user, order)
             ? Results.Ok(order)
-            : Results.NotFound()
-);
+            : Results.Forbid();
+    }
+).RequireAuthorization(Policies.Cliente);
 
 
 // ============================================================
@@ -210,9 +284,11 @@ app.MapGet(
 
    Registra un nuevo pedido en la tienda.
 
+   Requiere sesión: el pedido queda asociado al usuario del token.
+
    PROCESO:
 
-   1. Validar datos del cliente.
+   1. Validar datos del cliente y del método de pago.
    2. Consultar productos al microservicio de inventario.
    3. Validar productos y cantidades.
    4. Calcular el total.
@@ -225,6 +301,7 @@ app.MapPost(
     "/orders",
     async (
         CreateOrder request,
+        ClaimsPrincipal user,
         OrdersDb db,
         IHttpClientFactory http,
         IConfiguration config
@@ -236,9 +313,6 @@ app.MapPost(
         // ----------------------------------------------------
 
         if (
-            string.IsNullOrWhiteSpace(request.Customer) ||
-            string.IsNullOrWhiteSpace(request.Phone) ||
-            string.IsNullOrWhiteSpace(request.Address) ||
             request.Items is null ||
             request.Items.Count == 0 ||
             request.Items.Count > 30
@@ -247,6 +321,28 @@ app.MapPost(
             return Results.BadRequest(
                 "Datos de pedido incompletos"
             );
+        }
+
+        if (OrderRules.CustomerProblem(request) is { } customerProblem)
+        {
+            return Results.BadRequest(customerProblem);
+        }
+
+        if (!OrderRules.PaymentMethods.Contains(request.PaymentMethod))
+        {
+            return Results.BadRequest(
+                "Elige tarjeta, transferencia o contra entrega."
+            );
+        }
+
+        // Con tarjeta solo se guarda la marca y los últimos 4 dígitos.
+        var paymentDetail = "";
+        if (request.PaymentMethod == "tarjeta")
+        {
+            if (OrderRules.CardProblem(request.Card, out paymentDetail) is { } cardProblem)
+            {
+                return Results.BadRequest(cardProblem);
+            }
         }
 
 
@@ -327,16 +423,18 @@ app.MapPost(
             // Genera un identificador único.
             Id = Guid.NewGuid(),
 
-            // Información del cliente.
-            Customer = request.Customer,
-            Phone = request.Phone,
-            Address = request.Address,
+            // Usuario dueño del pedido.
+            UserId = user.UserId(),
+            Email = user.Email(),
 
-            // Define el método de pago.
-            PaymentMethod =
-                request.PaymentMethod == "contra-entrega"
-                    ? "contra-entrega"
-                    : "transferencia",
+            // Información del cliente.
+            Customer = request.Customer.Trim(),
+            Phone = OrderRules.FormatPhone(request.Phone),
+            Address = request.Address.Trim(),
+
+            // Método de pago ya validado.
+            PaymentMethod = request.PaymentMethod,
+            PaymentDetail = paymentDetail,
 
             // Estado inicial del pedido.
             Status = "pending-stock",
@@ -406,7 +504,7 @@ app.MapPost(
             order
         );
     }
-);
+).RequireAuthorization(Policies.Cliente);
 
 
 // ============================================================
@@ -423,12 +521,14 @@ app.MapPost(
 
    No permite cancelar pedidos pagados,
    rechazados o previamente cancelados.
+   Solo el dueño del pedido o un administrador.
 */
 
 app.MapPost(
     "/orders/{id:guid}/cancel",
     async (
         Guid id,
+        ClaimsPrincipal user,
         OrdersDb db,
         IConfiguration config
     ) =>
@@ -443,6 +543,11 @@ app.MapPost(
         if (order is null)
         {
             return Results.NotFound();
+        }
+
+        if (!CanSee(user, order))
+        {
+            return Results.Forbid();
         }
 
 
@@ -490,7 +595,298 @@ app.MapPost(
 
         return Results.Ok(order);
     }
-);
+).RequireAuthorization(Policies.Cliente);
+
+
+// ============================================================
+// 7B. EDICIÓN Y ELIMINACIÓN DE PEDIDOS
+// ============================================================
+
+/*
+   PUT /orders/{id}
+
+   Cambia los datos del cliente y las cantidades. Solo administradores.
+   Si las cantidades cambian, publica OrderRevised para que
+   inventario ajuste la reserva o el stock por Kafka.
+*/
+
+app.MapPut(
+    "/orders/{id:guid}",
+    async (
+        Guid id,
+        CreateOrder request,
+        OrdersDb db,
+        IHttpClientFactory http,
+        IConfiguration config
+    ) =>
+    {
+        var order = await db.Orders
+            .Include(item => item.Items)
+            .FirstOrDefaultAsync(item => item.Id == id);
+
+        if (order is null)
+        {
+            return Results.NotFound();
+        }
+
+        if (
+            order.Status is not (
+                "awaiting-payment" or "paid"
+            )
+        )
+        {
+            return Results.BadRequest(
+                "Solo se editan pedidos reservados o ya pagados. " +
+                "Si Kafka todavía está verificando el stock, espera un momento."
+            );
+        }
+
+        if (
+            request.Items is null ||
+            request.Items.Count == 0 ||
+            request.Items.Count > 30
+        )
+        {
+            return Results.BadRequest(
+                "Datos de pedido incompletos"
+            );
+        }
+
+        if (OrderRules.CustomerProblem(request) is { } customerProblem)
+        {
+            return Results.BadRequest(customerProblem);
+        }
+
+        if (!OrderRules.PaymentMethods.Contains(request.PaymentMethod))
+        {
+            return Results.BadRequest(
+                "Elige tarjeta, transferencia o contra entrega."
+            );
+        }
+
+        // Los datos de la tarjeta no se guardan, así que solo
+        // el cliente puede elegir tarjeta desde la cesta.
+        if (
+            request.PaymentMethod == "tarjeta" &&
+            order.PaymentMethod != "tarjeta"
+        )
+        {
+            return Results.BadRequest(
+                "El pago con tarjeta solo puede elegirlo el cliente desde la cesta."
+            );
+        }
+
+        var client = http.CreateClient();
+        var baseUrl = config["INVENTORY_URL"]
+            ?? "http://localhost:5101";
+        var products = await client.GetFromJsonAsync<
+            List<CatalogProduct>
+        >(baseUrl + "/products") ?? new();
+
+        var lines = new List<OrderItem>();
+        var groupedItems = request.Items
+            .Where(item => item.Quantity > 0)
+            .GroupBy(item => item.ProductId)
+            .Select(group => new OrderInput(
+                group.Key,
+                group.Sum(item => item.Quantity)
+            ))
+            .ToList();
+
+        if (groupedItems.Count == 0)
+        {
+            return Results.BadRequest(
+                "El pedido necesita al menos un reloj"
+            );
+        }
+
+        foreach (var input in groupedItems)
+        {
+            var product = products.FirstOrDefault(
+                item => item.Id == input.ProductId
+            );
+
+            if (
+                product is null ||
+                input.Quantity > 100
+            )
+            {
+                return Results.BadRequest(
+                    "Producto o cantidad inválida"
+                );
+            }
+
+            var alreadyHeld = order.Status == "awaiting-payment"
+                ? order.Items
+                    .Where(item => item.ProductId == product.Id)
+                    .Sum(item => item.Quantity)
+                : 0;
+
+            var available = product.Stock - product.Reserved + alreadyHeld;
+
+            if (input.Quantity > available)
+            {
+                return Results.BadRequest(
+                    $"No hay existencias suficientes de {product.Name}"
+                );
+            }
+
+            lines.Add(new OrderItem
+            {
+                ProductId = product.Id,
+                Name = product.Name,
+                Quantity = input.Quantity,
+                UnitPrice = product.Price
+            });
+        }
+
+        var previousItems = order.Items
+            .Select(item => new OrderLine(
+                item.ProductId,
+                item.Quantity,
+                item.UnitPrice
+            ))
+            .ToList();
+        var previousStatus = order.Status;
+
+        order.Customer = request.Customer.Trim();
+        order.Phone = OrderRules.FormatPhone(request.Phone);
+        order.Address = request.Address.Trim();
+
+        if (request.PaymentMethod != "tarjeta")
+        {
+            order.PaymentDetail = "";
+        }
+        order.PaymentMethod = request.PaymentMethod;
+
+        db.RemoveRange(order.Items.ToList());
+        order.Items.Clear();
+
+        foreach (var line in lines)
+        {
+            order.Items.Add(line);
+        }
+
+        order.Total = lines.Sum(
+            item => item.UnitPrice * item.Quantity
+        );
+
+        await db.SaveChangesAsync();
+
+        var nextItems = lines
+            .Select(item => new OrderLine(
+                item.ProductId,
+                item.Quantity,
+                item.UnitPrice
+            ))
+            .ToList();
+
+        if (!SameQuantities(previousItems, nextItems))
+        {
+            await Events.Publish(
+                config,
+                "OrderRevised",
+                new OrderRevised(
+                    order.Id,
+                    previousStatus,
+                    previousItems,
+                    nextItems
+                )
+            );
+        }
+
+        return Results.Ok(order);
+    }
+).RequireAuthorization(Policies.Admin);
+
+/*
+   DELETE /orders/{id}
+
+   Elimina el pedido y publica OrderRemoved. Solo administradores.
+   Inventario libera la reserva o devuelve las unidades vendidas.
+*/
+
+app.MapDelete(
+    "/orders/{id:guid}",
+    async (
+        Guid id,
+        OrdersDb db,
+        IConfiguration config
+    ) =>
+    {
+        var order = await db.Orders
+            .Include(item => item.Items)
+            .FirstOrDefaultAsync(item => item.Id == id);
+
+        if (order is null)
+        {
+            return Results.NotFound();
+        }
+
+        var previousStatus = order.Status;
+        var items = order.Items
+            .Select(item => new OrderLine(
+                item.ProductId,
+                item.Quantity,
+                item.UnitPrice
+            ))
+            .ToList();
+
+        if (
+            previousStatus is
+                "pending-stock" or
+                "awaiting-payment" or
+                "paid"
+        )
+        {
+            await Events.Publish(
+                config,
+                "OrderRemoved",
+                new OrderRemoved(
+                    order.Id,
+                    previousStatus,
+                    items
+                )
+            );
+        }
+
+        db.Orders.Remove(order);
+        await db.SaveChangesAsync();
+
+        return Results.NoContent();
+    }
+).RequireAuthorization(Policies.Admin);
+
+// El dueño ve y cancela su pedido; el administrador, cualquiera.
+// Los pedidos anteriores al login no tienen dueño: solo los ve el admin.
+static bool CanSee(ClaimsPrincipal user, ShopOrder order) =>
+    user.IsAdmin() ||
+    (order.UserId is not null && order.UserId == user.UserId());
+
+static bool SameQuantities(
+    List<OrderLine> previous,
+    List<OrderLine> next
+)
+{
+    var before = previous
+        .GroupBy(item => item.ProductId)
+        .ToDictionary(
+            group => group.Key,
+            group => group.Sum(item => item.Quantity)
+        );
+    var after = next
+        .GroupBy(item => item.ProductId)
+        .ToDictionary(
+            group => group.Key,
+            group => group.Sum(item => item.Quantity)
+        );
+
+    return before.Count == after.Count &&
+        before.All(pair =>
+            after.TryGetValue(pair.Key, out var quantity) &&
+            quantity == pair.Value
+        );
+}
 
 
 // ============================================================
@@ -519,7 +915,23 @@ record CreateOrder(
     string Phone,
     string Address,
     string PaymentMethod,
-    List<OrderInput> Items
+    List<OrderInput> Items,
+    CardInput? Card = null
+);
+
+
+// ------------------------------------------------------------
+// 9.1B. DATOS DE TARJETA (SIMULADA)
+// ------------------------------------------------------------
+
+/// <summary>
+/// Solo se usa para validar. Nunca se guarda el número ni el CVV.
+/// </summary>
+record CardInput(
+    string? Holder,
+    string? Number,
+    string? Expiry,
+    string? Cvv
 );
 
 
@@ -553,6 +965,149 @@ record CatalogProduct(
 );
 
 
+// ------------------------------------------------------------
+// 9.4. REGLAS DE VALIDACIÓN DEL PEDIDO
+// ------------------------------------------------------------
+
+/// <summary>
+/// Validaciones compartidas por crear y editar pedidos.
+/// El frontend aplica las mismas reglas, pero el servidor decide.
+/// </summary>
+static partial class OrderRules
+{
+    public static readonly string[] PaymentMethods =
+        ["tarjeta", "transferencia", "contra-entrega"];
+
+    [GeneratedRegex(@"^\p{L}[\p{L} .'-]{2,99}$")]
+    private static partial Regex NamePattern();
+
+    // Teléfono de El Salvador: 8 dígitos que empiezan por 2, 6 o 7.
+    [GeneratedRegex(@"^[267]\d{7}$")]
+    private static partial Regex PhonePattern();
+
+    [GeneratedRegex(@"^(0[1-9]|1[0-2])/(\d{2})$")]
+    private static partial Regex ExpiryPattern();
+
+    public static string? CustomerProblem(CreateOrder request)
+    {
+        if (!NamePattern().IsMatch(request.Customer?.Trim() ?? ""))
+        {
+            return "El nombre debe tener entre 3 y 100 letras.";
+        }
+
+        if (!PhonePattern().IsMatch(PhoneDigits(request.Phone)))
+        {
+            return "El teléfono debe tener 8 dígitos y empezar por 2, 6 o 7.";
+        }
+
+        var address = request.Address?.Trim() ?? "";
+        if (address.Length is < 10 or > 300)
+        {
+            return "La dirección debe tener entre 10 y 300 caracteres.";
+        }
+
+        return null;
+    }
+
+    // Quita espacios, guiones y el prefijo +503.
+    static string PhoneDigits(string? phone)
+    {
+        var digits = new string((phone ?? "").Where(char.IsDigit).ToArray());
+        return digits.Length == 11 && digits.StartsWith("503")
+            ? digits[3..]
+            : digits;
+    }
+
+    public static string FormatPhone(string phone)
+    {
+        var digits = PhoneDigits(phone);
+        return $"{digits[..4]}-{digits[4..]}";
+    }
+
+    /// <summary>
+    /// Valida titular, número (Luhn), vencimiento y CVV.
+    /// En detail devuelve lo único que se guarda: marca y últimos 4 dígitos.
+    /// </summary>
+    public static string? CardProblem(CardInput? card, out string detail)
+    {
+        detail = "";
+
+        if (card is null)
+        {
+            return "Faltan los datos de la tarjeta.";
+        }
+
+        if (!NamePattern().IsMatch(card.Holder?.Trim() ?? ""))
+        {
+            return "Escribe el nombre del titular como aparece en la tarjeta.";
+        }
+
+        var number = new string((card.Number ?? "")
+            .Where(c => c is not (' ' or '-'))
+            .ToArray());
+
+        if (number.Length is < 13 or > 19 || !number.All(char.IsDigit) || !Luhn(number))
+        {
+            return "El número de tarjeta no es válido.";
+        }
+
+        var expiry = ExpiryPattern().Match(card.Expiry?.Trim() ?? "");
+        if (!expiry.Success)
+        {
+            return "El vencimiento debe tener el formato MM/AA.";
+        }
+
+        var month = int.Parse(expiry.Groups[1].Value);
+        var year = 2000 + int.Parse(expiry.Groups[2].Value);
+        var lastDay = new DateTime(year, month, 1).AddMonths(1);
+        if (lastDay <= DateTime.UtcNow.Date || year > DateTime.UtcNow.Year + 15)
+        {
+            return "La tarjeta está vencida o la fecha no es válida.";
+        }
+
+        var brand = CardBrand(number);
+        var cvvLength = brand == "Amex" ? 4 : 3;
+        var cvv = card.Cvv?.Trim() ?? "";
+        if (cvv.Length != cvvLength || !cvv.All(char.IsDigit))
+        {
+            return $"El CVV debe tener {cvvLength} dígitos.";
+        }
+
+        detail = $"{brand} •••• {number[^4..]}";
+        return null;
+    }
+
+    static string CardBrand(string number) =>
+        number[0] == '4' ? "Visa"
+        : number.StartsWith("34") || number.StartsWith("37") ? "Amex"
+        : int.Parse(number[..2]) is >= 51 and <= 55 ||
+          int.Parse(number[..4]) is >= 2221 and <= 2720 ? "Mastercard"
+        : "Tarjeta";
+
+    // Algoritmo de Luhn: detecta errores al teclear el número.
+    static bool Luhn(string number)
+    {
+        var sum = 0;
+        var doubleIt = false;
+
+        for (var i = number.Length - 1; i >= 0; i--)
+        {
+            var digit = number[i] - '0';
+            if (doubleIt)
+            {
+                digit *= 2;
+                if (digit > 9) digit -= 9;
+            }
+
+            sum += digit;
+            doubleIt = !doubleIt;
+        }
+
+        return sum % 10 == 0;
+    }
+}
+
+
 // ============================================================
 // 10. ENTIDADES DE BASE DE DATOS
 // ============================================================
@@ -570,6 +1125,12 @@ public class ShopOrder
     // Identificador único del pedido.
     public Guid Id { get; set; }
 
+    // Usuario de AuthApi que creó el pedido.
+    // Nulo en pedidos creados antes de existir el login.
+    public int? UserId { get; set; }
+
+    public string Email { get; set; } = "";
+
     // Información del cliente.
     public string Customer { get; set; } = "";
 
@@ -577,8 +1138,12 @@ public class ShopOrder
 
     public string Address { get; set; } = "";
 
-    // Método de pago seleccionado.
+    // Método de pago seleccionado:
+    // tarjeta, transferencia o contra-entrega.
     public string PaymentMethod { get; set; } = "";
+
+    // Con tarjeta: marca y últimos 4 dígitos, p. ej. "Visa •••• 4242".
+    public string PaymentDetail { get; set; } = "";
 
     // Total monetario del pedido.
     public decimal Total { get; set; }
@@ -664,11 +1229,18 @@ public class OrdersDb(
         ModelBuilder builder
     )
     {
-        builder.HasDefaultSchema("orders");
+        if (!Database.IsSqlite())
+        {
+            builder.HasDefaultSchema("orders");
+        }
 
         builder.Entity<ShopOrder>()
             .Property(o => o.Total)
             .HasPrecision(18, 2);
+
+        // Acelera la consulta de "mis pedidos".
+        builder.Entity<ShopOrder>()
+            .HasIndex(o => o.UserId);
 
         builder.Entity<OrderItem>()
             .Property(i => i.UnitPrice)

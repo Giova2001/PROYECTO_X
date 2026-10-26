@@ -12,12 +12,12 @@ Se partió del proyecto base `TiendaRelojes`, que ya separaba catálogo, pedidos
 
 Hay dos formas de comunicación, y cada una tiene un motivo:
 
-- **Kafka** lleva los cambios de negocio: pedido creado, stock reservado o rechazado, pago confirmado o fallido, pedido cancelado. Quien publica no llama al siguiente servicio. Quien escucha decide si el mensaje le corresponde.
+- **Kafka** lleva los cambios de negocio: pedido creado, stock reservado o rechazado, pago confirmado o fallido, pedido cancelado, pedido editado o pedido eliminado. Quien publica no llama al siguiente servicio. Quien escucha decide si el mensaje le corresponde.
 - **HTTP** se usa solo cuando hace falta una respuesta inmediata. Pedidos consulta el catálogo para tomar el precio del servidor. Pagos consulta el estado del pedido antes de simular el cobro. El navegador consulta productos, pedidos y pagos a través de Nginx.
 
 El navegador no se conecta a Kafka. La página pregunta el estado del pedido cada 2,5 segundos mientras la ventana de seguimiento está abierta. Así la interfaz muestra el avance sin convertirse en otro consumidor del bus.
 
-Cada servicio es dueño de su esquema en Supabase. Inventario no lee la tabla de pedidos, y pedidos no modifica el stock. El único dato que cruzan es el mensaje del evento.
+Cada servicio es dueño de su base SQLite. Inventario no lee la tabla de pedidos, y pedidos no modifica el stock. El único dato que cruzan es el mensaje del evento.
 
 ```mermaid
 flowchart LR
@@ -47,19 +47,19 @@ flowchart LR
 | Conservar los tres servicios del proyecto base | El tema pide microservicios. Inventario, pedidos y pagos ya marcaban esas responsabilidades. |
 | Un solo tópico, `shop-events`, con un campo `Type` | Un broker de demostración se explica mejor con un canal. Cada consumidor ignora los tipos que no le tocan. |
 | Tres grupos de consumidores: `inventory-service`, `orders-service`, `payments-service` | En Kafka, cada grupo recibe una copia del mensaje. Así los tres servicios ven el mismo pedido. |
-| Confirmación manual del offset (`EnableAutoCommit = false`) | El offset se confirma después de guardar en Supabase. Si el proceso se cae antes, el mensaje se vuelve a leer. |
+| Confirmación manual del offset (`EnableAutoCommit = false`) | El offset se confirma después de guardar en SQLite. Si el proceso se cae antes, el mensaje se vuelve a leer. |
 | Tabla de eventos ya procesados en cada base | El mismo mensaje puede llegar dos veces. El `Id` del evento se guarda con índice único y la segunda vez no se vuelve a aplicar. |
 | Crear el tópico al arrancar | Un broker nuevo no tiene `shop-events`. Los consumidores fallaban al suscribirse. `Events.EnsureTopic` lo crea con 1 partición y factor de réplica 1. |
 | Reserva antes del cobro | `OrderPlaced` no descuenta el stock. Lo aparta en `Reserved`. La salida real ocurre solo con `PaymentConfirmed`. Si el pago falla o el pedido se cancela, la reserva vuelve al disponible. |
 | El precio lo fija inventario | El navegador envía identificador y cantidad. Pedidos pide `GET /products` y copia el precio de ese momento. El cliente no puede inventar el monto. |
 | Cobro simulado | El alcance es académico. `POST /payments/{id}/simulate` acepta `approved` o `rejected`. No hay pasarela ni cargo real. |
-| Postgres de Supabase, un esquema por servicio | Los tres servicios usan el mismo proyecto. Cada uno migra solo su esquema (`inventory`, `orders`, `payments`) al arrancar. Reiniciar Docker no borra los datos. |
+| SQLite por servicio, en un volumen Docker | Cada uno arranca con `EnsureCreated` y conserva sus datos al reiniciar el contenedor. No hay una base compartida que acople los servicios. |
 | Productor con `Acks.All` e idempotencia | El mensaje se considera publicado cuando el broker lo acepta. Se reduce el riesgo de duplicarlo por un reintento del productor. |
-| Cesta visible junto al catálogo | El alta del pedido no depende de un cuadro oculto. Cada reloj tiene «Añadir a la cesta» y el formulario queda en la misma página. |
+| Cesta visible junto al catálogo | El alta del pedido no depende de un cuadro oculto. Cada reloj tiene «Añadir a la cesta», sigue visible y se puede elegir otra vez. El formulario queda en la misma página. |
 | Nginx como única puerta | El navegador habla con el puerto 8088. `/api/inventory/`, `/api/orders/` y `/api/payments/` se reenvían al servicio correspondiente. El resto son los archivos estáticos. |
 | Kafka de un solo nodo en Compose | Basta para la demostración. El factor de réplica es 1. No representa un clúster de producción. |
 
-Lo que quedó fuera a propósito: caja de salida transaccional, caducidad de reservas, autenticación y conciliación si Supabase se guarda y Kafka no alcanza a recibir el mensaje. Esas piezas cambian el prototipo a un sistema de producción y no forman parte de esta entrega. El README las deja escritas como limitación.
+Lo que quedó fuera a propósito: caja de salida transaccional, caducidad de reservas, autenticación y conciliación si SQLite se guarda y Kafka no alcanza a recibir el mensaje. Esas piezas cambian el prototipo a un sistema de producción y no forman parte de esta entrega. El README las deja escritas como limitación.
 
 ## 3. Reutilización del código
 
@@ -69,7 +69,7 @@ El proyecto base aportó la tienda, los tres proyectos ASP.NET Core, Nginx, Dock
 
 `Shared/Messaging.cs` es el único código de integración. Los tres proyectos referencian esa biblioteca y llaman a los mismos miembros:
 
-- Los contratos `OrderPlaced`, `StockReserved`, `StockRejected`, `PaymentConfirmed`, `PaymentFailed` y `OrderCancelled`.
+- Los contratos `OrderPlaced`, `StockReserved`, `StockRejected`, `PaymentConfirmed`, `PaymentFailed`, `OrderCancelled`, `OrderRevised` y `OrderRemoved`.
 - El sobre `EventMessage`, con `Id`, `Type`, `Data` y `CreatedAt`.
 - `Events.Json` y `Events.Parse` para serializar ese sobre.
 - `Events.Publish` para enviar.
@@ -80,7 +80,7 @@ Ningún servicio construye su propio productor. Si cambia el nombre del tópico 
 
 ### Lo que se repite como patrón, con reglas distintas
 
-Los tres programas siguen la misma forma: API mínima, Entity Framework Core, PostgreSQL en Supabase, `Migrate`, CORS, `GET /health` y un `BackgroundService` que consume Kafka. Esa forma se reutiliza, pero la regla de negocio no se metió en `Shared`:
+Los tres programas siguen la misma forma: API mínima, Entity Framework Core, SQLite, `EnsureCreated`, CORS, `GET /health` y un `BackgroundService` que consume Kafka. Esa forma se reutiliza, pero la regla de negocio no se metió en `Shared`:
 
 - `InventoryWorker` reserva, rechaza, confirma la venta o libera.
 - `OrderWorker` cambia el estado del pedido.
@@ -98,7 +98,7 @@ La cesta, el catálogo y el panel de administración ya existían en `frontend/`
 
 ### Arranque
 
-`docker compose up --build` levanta Kafka, las tres APIs y Nginx. Las APIs esperan a que Kafka responda. Al iniciar, cada una migra su esquema en Supabase. Inventario carga los cuatro relojes si la tabla está vacía. Los tres trabajadores esperan tres segundos y se suscriben a `shop-events`. Nginx publica la tienda en el puerto 8088.
+`docker compose up --build` levanta Kafka, las tres APIs y Nginx. Las APIs esperan a que Kafka responda. Al iniciar, cada una crea su archivo SQLite. Inventario carga los cuatro relojes si la tabla está vacía. Los tres trabajadores esperan tres segundos y se suscriben a `shop-events`. Nginx publica la tienda en el puerto 8088.
 
 ### Consulta del catálogo
 
@@ -158,7 +158,7 @@ Cuando la página ve `paid`, `rejected` o `payment-failed`, vuelve a cargar el c
 
 ### Administración
 
-El panel usa solo InventoryApi y OrdersApi por HTTP: listar movimientos, ajustar existencias con `POST /products/{id}/adjust` y registrar un reloj con `POST /products`. Esos cambios no pasan por Kafka porque no forman parte del flujo de un pedido.
+El panel lista movimientos, ajusta existencias con `POST /products/{id}/adjust` y registra un reloj con `POST /products`. Esos cambios de catálogo no pasan por Kafka. Editar o eliminar un pedido sí: `PUT /orders/{id}` publica `OrderRevised` y `DELETE /orders/{id}` publica `OrderRemoved`. Inventario compara las cantidades anteriores con las nuevas. Si el pedido estaba reservado, ajusta `Reserved`. Si ya estaba pagado, ajusta `Stock`.
 
 ## 5. Lectura rápida de una venta
 
