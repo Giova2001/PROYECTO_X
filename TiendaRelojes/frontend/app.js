@@ -487,7 +487,7 @@ $('#cesta').onclick = e => {
 
 $('#adminBtn').onclick = async () => {
     if (!isAdmin()) {
-        openAuth('El panel administrativo es solo para el rol administrador.');
+        openAuth('El panel de control es solo para el rol administrador.');
         return;
     }
     await refreshAdmin();
@@ -894,7 +894,7 @@ setInterval(() => {
     if ($('#orderDialog').open) {
         refreshOrder();
     }
-    if ($('#adminDialog').open && !adminTick) {
+    if ($('#adminDialog').open && isAdmin() && !adminTick) {
         adminTick = true;
         refreshAdmin().finally(() => {
             adminTick = false;
@@ -908,56 +908,65 @@ setInterval(() => {
 ========================================================= */
 
 function renderAdminProducts() {
-    $('#adminProducts').innerHTML = products
-        .map(p => `
+    const box = $('#adminProducts');
+    if (!box || box.contains(document.activeElement)) return;
+
+    box.innerHTML = products.length
+        ? products.map(p => `
             <div class="admin-row">
                 <span>
                     ${safe(p.name)}
-
                     <br>
-
                     <small class="${p.reserved > 0 ? 'reserve' : ''}">
-                        Stock ${p.stock},
-                        reservado ${p.reserved}
+                        Stock ${p.stock}, reservado ${p.reserved} · ${money(p.price)}
                     </small>
                 </span>
-
-                <span>
-                    <button
-                        class="smallbtn"
-                        data-adjust="${p.id}"
-                        data-change="1"
-                    >
-                        +1
-                    </button>
-
-                    <button
-                        class="smallbtn"
-                        data-adjust="${p.id}"
-                        data-change="-1"
-                    >
-                        -1
-                    </button>
+                <span class="ingreso-actions">
+                    <input type="number" min="1" max="999" value="1" data-qty="${p.id}"
+                        aria-label="Unidades a ingresar de ${safe(p.name)}">
+                    <button type="button" class="smallbtn" data-ingreso="${p.id}">Ingresar</button>
+                    <button type="button" class="smallbtn" data-adjust="${p.id}" data-change="-1">−1</button>
                 </span>
             </div>
-        `)
-        .join('');
+        `).join('')
+        : '<p class="muted">No hay productos. Usa el formulario para el primer ingreso.</p>';
 
-    document.querySelectorAll('[data-adjust]').forEach(b => {
-        b.onclick = async () => {
+    box.querySelectorAll('[data-ingreso]').forEach(button => {
+        button.onclick = async () => {
+            const qty = Number(box.querySelector(`[data-qty="${button.dataset.ingreso}"]`)?.value || 0);
+            const message = $('#productMsg');
+            if (!Number.isInteger(qty) || qty < 1) {
+                message.textContent = 'Indica al menos una unidad para ingresar.';
+                message.className = 'error';
+                return;
+            }
+
             try {
-                await post(
-                    `/api/inventory/products/${b.dataset.adjust}/adjust`,
-                    {
-                        change: +b.dataset.change,
-                        reason: 'Ajuste manual'
-                    }
-                );
-
+                await post(`/api/inventory/products/${button.dataset.ingreso}/adjust`, {
+                    change: qty,
+                    reason: 'Ingreso'
+                });
+                message.textContent = `Se ingresaron ${qty} unidad(es) al inventario.`;
+                message.className = 'success';
                 await load();
+            } catch (error) {
+                message.textContent = error.message;
+                message.className = 'error';
+            }
+        };
+    });
 
-            } catch (e) {
-                alert(e.message);
+    box.querySelectorAll('[data-adjust]').forEach(button => {
+        button.onclick = async () => {
+            try {
+                await post(`/api/inventory/products/${button.dataset.adjust}/adjust`, {
+                    change: +button.dataset.change,
+                    reason: 'Ajuste manual'
+                });
+                await load();
+            } catch (error) {
+                $('#productMsg').textContent = error.message;
+                $('#productMsg').className = 'error';
             }
         };
     });
@@ -1243,27 +1252,38 @@ async function refreshAdmin() {
    17. REGISTRO DE NUEVOS PRODUCTOS
 ========================================================= */
 
-$('#newProduct').onsubmit = async e => {
-    e.preventDefault();
+$('#newProduct').onsubmit = async event => {
+    event.preventDefault();
 
-    const f = new FormData(e.target);
+    if (!isAdmin()) {
+        openAuth('El ingreso de productos es solo para el rol administrador.');
+        return;
+    }
+
+    const form = event.target;
+    const data = new FormData(form);
+    const message = $('#productMsg');
+    message.textContent = 'Guardando en inventario...';
+    message.className = 'notice';
 
     try {
         await post('/api/inventory/products', {
-            name: f.get('name'),
-            category: f.get('category'),
-            price: Number(f.get('price')),
-            stock: Number(f.get('stock')),
-            description: f.get('description') || '',
+            name: data.get('name'),
+            category: data.get('category'),
+            price: Number(data.get('price')),
+            stock: Number(data.get('stock')),
+            description: data.get('description') || '',
             image: '/images/placeholder.svg'
         });
 
-        e.target.reset();
-
+        form.reset();
+        form.elements.stock.value = '1';
+        message.textContent = 'Producto ingresado. Ya aparece en el catálogo.';
+        message.className = 'success';
         await refreshAdmin();
-
-    } catch (e) {
-        alert(e.message);
+    } catch (error) {
+        message.textContent = error.message;
+        message.className = 'error';
     }
 };
 
@@ -1298,10 +1318,8 @@ function setSession(value) {
     session = value;
     store.write('te-session', value);
 
-    if (!value) {
-        if ($('#adminDialog').open) close('adminDialog');
-        if ($('#myOrdersDialog').open) close('myOrdersDialog');
-    }
+    if (!isAdmin() && $('#adminDialog').open) close('adminDialog');
+    if (!value && $('#myOrdersDialog').open) close('myOrdersDialog');
 
     renderSession();
 }
@@ -1338,6 +1356,14 @@ async function submitAuth(form, url, body) {
         setSession({ token: result.token, user: result.user });
         form.reset();
         close('authDialog');
+
+        if (result.user.role === 'admin') {
+            note('Sesión de administrador. El panel de control quedó activo para el ingreso de productos.', false);
+            await refreshAdmin();
+            show('adminDialog');
+            return;
+        }
+
         note(`Hola, ${result.user.name}. Ya puedes crear tu pedido.`, false);
     } catch (error) {
         message.textContent = error.message;

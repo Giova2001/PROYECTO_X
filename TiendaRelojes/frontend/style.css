@@ -529,6 +529,38 @@ textarea {
     gap: 25px;
 }
 
+#adminBtn {
+    white-space: nowrap;
+}
+
+#adminDialog {
+    width: min(95vw, 980px);
+}
+
+.product-entry {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 16px;
+    margin-bottom: 8px;
+}
+
+.product-entry .full {
+    grid-column: 1 / -1;
+}
+
+.ingreso-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.ingreso-actions input {
+    width: 72px;
+    margin: 0;
+    padding: 6px;
+}
+
 .order-actions {
     display: flex;
     align-items: center;
@@ -749,7 +781,8 @@ textarea:user-invalid {
     }
 
     .detail,
-    .admin-grid {
+    .admin-grid,
+    .product-entry {
         grid-template-columns: 1fr;
     }
 

@@ -21,7 +21,7 @@
             <a href="#catalogo">Tienda</a><a href="#nosotros">Acerca de</a><a href="#envios">Envíos</a><a
                 href="#contacto">Contacto</a></nav>
         <div class="nav-actions">
-            <button id="adminBtn" class="light" hidden>Administración</button>
+            <button id="adminBtn" class="light" hidden>Panel de control</button>
             <button id="ordersBtn" hidden>Mis pedidos</button>
             <button id="loginBtn">Iniciar sesión</button>
             <span id="userBox" class="user-box" hidden>
@@ -264,18 +264,22 @@
         <div id="myOrders">Cargando...</div>
     </dialog>
     <dialog id="adminDialog"><button class="close" data-close="adminDialog">×</button>
-        <h2>Panel administrativo (demostración)</h2>
-        <p class="warning">Solo para el rol administrador. Úsalo únicamente en un entorno local de pruebas.</p>
+        <p class="eyebrow">Sesión de administrador</p>
+        <h2>Panel de control</h2>
+        <p class="muted">Este panel se activa solo con el rol administrador. Desde aquí ingresas productos al inventario de la tienda.</p>
         <div class="admin-grid">
-            <section>
-                <h3>Productos e inventario</h3>
+            <section id="inventoryPanel">
+                <h3>Ingreso de productos</h3>
+                <form id="newProduct" class="product-entry">
+                    <label>Nombre<input name="name" required maxlength="120" placeholder="Reloj de ejemplo"></label>
+                    <label>Categoría<input name="category" required maxlength="80" placeholder="Casio, Seiko..."></label>
+                    <label>Precio USD<input name="price" type="number" min="0" step="0.01" required></label>
+                    <label>Unidades a ingresar<input name="stock" type="number" min="0" required value="1"></label>
+                    <label class="full">Descripción<input name="description" maxlength="400"></label>
+                    <button class="primary full" type="submit">Ingresar producto</button>
+                </form>
+                <p id="productMsg" role="status"></p>
                 <div id="adminProducts"></div>
-                <h4>Agregar reloj</h4>
-                <form id="newProduct"><label>Nombre<input name="name" required></label><label>Categoría<input
-                            name="category" value="Casio" required></label><label>Precio USD<input name="price"
-                            type="number" min="0" step="0.01" required></label><label>Existencias<input name="stock"
-                            type="number" min="0" required></label><label>Descripción<input
-                            name="description"></label><button class="primary">Guardar producto</button></form>
             </section>
             <section>
                 <h3>Pedidos recientes</h3>
@@ -294,7 +298,7 @@
         </section>
     </dialog>
     <footer>© 2026 Tiempo & Estilo · Todos los derechos reservados · Pagos simulados</footer>
-    <script src="/app.js?v=10"></script>
+    <script src="/app.js?v=12"></script>
 </body>
 
 </html>
